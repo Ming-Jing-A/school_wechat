@@ -4,6 +4,7 @@ import com.mingjin.school_wechat.common.auth.AuthContext;
 import com.mingjin.school_wechat.common.exception.BusinessException;
 import com.mingjin.school_wechat.common.security.PasswordUtils;
 import com.mingjin.school_wechat.mapper.AuthMapper;
+import com.mingjin.school_wechat.mapper.FriendMapper;
 import com.mingjin.school_wechat.model.entity.UserDevice;
 import com.mingjin.school_wechat.model.entity.UserLoginSession;
 import com.mingjin.school_wechat.model.entity.WechatUser;
@@ -15,18 +16,28 @@ import com.mingjin.school_wechat.model.view.LoginResponse;
 import com.mingjin.school_wechat.model.view.UserProfileView;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
 public class AuthService {
 
     private final AuthMapper authMapper;
+    private final ConversationService conversationService;
+    private final FriendMapper friendMapper;
+    private final SyncEventService syncEventService;
 
-    public AuthService(AuthMapper authMapper) {
+    public AuthService(AuthMapper authMapper, ConversationService conversationService, FriendMapper friendMapper, SyncEventService syncEventService) {
         this.authMapper = authMapper;
+        this.conversationService = conversationService;
+        this.friendMapper = friendMapper;
+        this.syncEventService = syncEventService;
     }
 
     @Transactional
@@ -39,7 +50,9 @@ public class AuthService {
         if (!PasswordUtils.matches(request.getPassword(), user.getPasswordHash())) {
             throw new BusinessException("用户名或密码错误");
         }
-        return createLoginSession(user, request.getDeviceName(), request.getBrowserName(), request.getOsName(), ipAddress);
+        LoginResponse response = createLoginSession(user, request.getDeviceName(), request.getBrowserName(), request.getOsName(), ipAddress);
+        authMapper.updateUserOnline(user.getId());
+        return response;
     }
 
     @Transactional
@@ -61,7 +74,9 @@ public class AuthService {
         user.setStatus(1);
         user.setLastOnlineAt(LocalDateTime.now());
         authMapper.insertWechatUser(user);
-        return createLoginSession(user, "默认网页端", "Browser", "Unknown OS", ipAddress);
+        LoginResponse response = createLoginSession(user, "默认网页端", "Browser", "Unknown OS", ipAddress);
+        authMapper.updateUserOnline(user.getId());
+        return response;
     }
 
     @Transactional
@@ -105,6 +120,7 @@ public class AuthService {
             throw new BusinessException("更新内容不能为空");
         }
         WechatUser user = getRequiredCurrentUserEntity();
+        String oldNickname = user.getNickname();
         user.setNickname(resolveProfileValue(request.getNickname(), user.getNickname()));
         user.setWechatNo(resolveProfileValue(request.getWechatNo(), user.getWechatNo()));
         user.setPhone(resolveProfileValue(request.getPhone(), user.getPhone()));
@@ -118,6 +134,18 @@ public class AuthService {
         validateProfile(user);
         authMapper.updateUserProfile(user);
         touchCurrentSession();
+        Long currentUserId = user.getId();
+        String newNickname = user.getNickname();
+        runAfterCommit(() -> {
+            if (oldNickname != null && !oldNickname.equals(newNickname)) {
+                friendMapper.clearRemarkNameIfMatches(currentUserId, oldNickname);
+                List<Long> friendIds = friendMapper.findFriendUserIds(currentUserId);
+                for (Long friendId : friendIds) {
+                    syncEventService.recordEvent(friendId, null, "friendship", "update", "profile", currentUserId, Map.of("userId", currentUserId));
+                }
+            }
+            conversationService.refreshConversationStateForFriends(currentUserId);
+        });
         return toUserProfileView(authMapper.findUserById(user.getId()));
     }
 
@@ -153,7 +181,6 @@ public class AuthService {
         session.setLastActiveAt(now);
         session.setStatus(1);
         authMapper.insertUserLoginSession(session);
-        authMapper.updateUserOnline(user.getId());
 
         LoginResponse response = new LoginResponse();
         response.setUserId(user.getId());
@@ -246,10 +273,10 @@ public class AuthService {
 
     private void touchCurrentSession() {
         if (AuthContext.get() != null) {
-            authMapper.updateSessionActive(AuthContext.get().getSessionId());
+            authMapper.updateSessionActiveThrottled(AuthContext.get().getSessionId());
         }
         if (AuthContext.getDeviceId() != null) {
-            authMapper.updateDeviceActive(AuthContext.getDeviceId());
+            authMapper.updateDeviceActiveThrottled(AuthContext.getDeviceId());
         }
     }
 
@@ -285,5 +312,18 @@ public class AuthService {
             return null;
         }
         return value.trim();
+    }
+
+    private void runAfterCommit(Runnable task) {
+        if (!TransactionSynchronizationManager.isSynchronizationActive()) {
+            task.run();
+            return;
+        }
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCommit() {
+                task.run();
+            }
+        });
     }
 }

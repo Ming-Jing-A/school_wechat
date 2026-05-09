@@ -10,7 +10,9 @@ public class ConversationMessageView {
     private Long conversationId;
     private Long senderUserId;
     private String senderNickname;
+    private String senderUsername;
     private String senderDisplayName;
+    private String senderRemarkName;
     private String senderAvatarUrl;
     private String messageType;
     private String messageStatus;

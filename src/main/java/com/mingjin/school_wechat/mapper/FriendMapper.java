@@ -36,7 +36,11 @@ public interface FriendMapper {
 
     @Select("""
             SELECT f.friend_user_id,
-                   f.remark_name,
+                   u.username,
+                   CASE
+                       WHEN f.remark_name IS NOT NULL AND f.remark_name != u.nickname AND f.remark_name != u.username THEN f.remark_name
+                       ELSE NULL
+                   END AS remark_name,
                    f.is_starred,
                    f.is_muted,
                    u.nickname,
@@ -197,6 +201,17 @@ public interface FriendMapper {
                            @Param("friendUserId") Long friendUserId,
                            @Param("remarkName") String remarkName);
 
+    @Update("""
+            UPDATE friendship
+            SET remark_name = NULL,
+                updated_at = NOW()
+            WHERE friend_user_id = #{userId}
+              AND remark_name = #{oldNickname}
+              AND status = 1
+            """)
+    int clearRemarkNameIfMatches(@Param("userId") Long userId,
+                                 @Param("oldNickname") String oldNickname);
+
     @Select("""
             SELECT *
             FROM wechat_user
@@ -262,4 +277,12 @@ public interface FriendMapper {
               AND blocked_user_id = #{blockedUserId}
             """)
     int deleteBlacklist(@Param("userId") Long userId, @Param("blockedUserId") Long blockedUserId);
+
+    @Select("""
+            SELECT friend_user_id
+            FROM friendship
+            WHERE user_id = #{userId}
+              AND status = 1
+            """)
+    List<Long> findFriendUserIds(@Param("userId") Long userId);
 }

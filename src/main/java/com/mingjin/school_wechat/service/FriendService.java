@@ -324,7 +324,7 @@ public class FriendService {
         friendship.setUserId(userId);
         friendship.setFriendUserId(friendUserId);
         friendship.setSourceRequestId(requestId);
-        friendship.setRemarkName(target == null ? null : target.getNickname());
+        friendship.setRemarkName(null);
         friendship.setIsStarred(0);
         friendship.setIsMuted(0);
         friendship.setStatus(1);

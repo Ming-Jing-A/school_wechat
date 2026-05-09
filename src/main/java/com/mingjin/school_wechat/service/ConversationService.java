@@ -284,7 +284,7 @@ public class ConversationService {
     public List<GroupMemberView> listGroupMembers(Long userId, Long conversationId) {
         getRequiredGroupConversation(conversationId);
         getRequiredActiveMember(conversationId, userId);
-        return conversationMapper.findGroupMembers(conversationId);
+        return conversationMapper.findGroupMembers(conversationId, userId);
     }
 
     public List<GroupJoinRequestView> listGroupJoinRequests(Long userId, Long conversationId) {
@@ -327,7 +327,7 @@ public class ConversationService {
                 null,
                 null
         );
-        notifyGroupManagers(conversation, "group_join_request", "收到新的入群申请", "有新的入群申请待处理");
+        notifyGroupManagers(conversation, userId, "group_join_request", "收到新的入群申请", "有新的入群申请待处理");
         return "入群申请已提交";
     }
 
@@ -577,13 +577,13 @@ public class ConversationService {
             );
         }
         pushConversationStateToMembers(conversationId, activeMembers);
-        return conversationMapper.findGroupMembers(conversationId);
+        return conversationMapper.findGroupMembers(conversationId, operatorUserId);
     }
 
     @Transactional
     public GroupDetailView updateGroupMuteAll(Long userId,
-                                              Long conversationId,
-                                              UpdateGroupMuteAllRequest request) {
+                                               Long conversationId,
+                                               UpdateGroupMuteAllRequest request) {
         getRequiredGroupConversation(conversationId);
         ConversationMember currentMember = getRequiredActiveMember(conversationId, userId);
         assertManagerRole(currentMember);
@@ -647,7 +647,7 @@ public class ConversationService {
         List<Long> memberIds = conversationMapper.findMemberUserIds(conversationId);
         recordGroupEventForMembers(memberIds, conversationId, "member_role", Map.of("targetUserId", memberUserId, "memberRole", targetRole));
         pushConversationStateToMembers(conversationId, memberIds);
-        return conversationMapper.findGroupMembers(conversationId);
+        return conversationMapper.findGroupMembers(conversationId, userId);
     }
 
     @Transactional
@@ -681,7 +681,7 @@ public class ConversationService {
         List<Long> memberIds = conversationMapper.findMemberUserIds(conversationId);
         recordGroupEventForMembers(memberIds, conversationId, "member_mute", Map.of("targetUserId", memberUserId, "muted", muted));
         pushConversationStateToMembers(conversationId, memberIds);
-        return conversationMapper.findGroupMembers(conversationId);
+        return conversationMapper.findGroupMembers(conversationId, userId);
     }
 
     @Transactional
@@ -759,7 +759,7 @@ public class ConversationService {
         // 发送消息时自动清空草稿
         conversationMapper.updateConversationDraft(conversationId, userId, "");
 
-        ConversationMessageView messageView = formatConversationMessage(conversationMapper.findMessageById(chatMessage.getId()));
+        ConversationMessageView messageView = formatConversationMessage(conversationMapper.findMessageById(chatMessage.getId(), userId));
 
         // 异步插入消息状态和推送，提高响应速度
         List<Long> memberIds = conversationMapper.findMemberUserIds(conversationId);
@@ -950,7 +950,7 @@ public class ConversationService {
             );
         }
 
-        ConversationMessageView recalledView = formatConversationMessage(conversationMapper.findMessageById(messageId));
+        ConversationMessageView recalledView = formatConversationMessage(conversationMapper.findMessageById(messageId, userId));
         List<Long> memberIds = conversationMapper.findMemberUserIds(conversationId);
         for (Long memberId : memberIds) {
             if (recalledView != null) {
@@ -1017,7 +1017,7 @@ public class ConversationService {
             );
         }
         pushConversationStateToMembers(conversationId, remainingMembers);
-        return conversationMapper.findGroupMembers(conversationId);
+        return conversationMapper.findGroupMembers(conversationId, operatorUserId);
     }
 
     @Transactional
@@ -1380,10 +1380,11 @@ public class ConversationService {
     }
 
     private void notifyGroupManagers(Conversation conversation,
+                                     Long userId,
                                      String type,
                                      String title,
                                      String content) {
-        for (GroupMemberView memberView : conversationMapper.findGroupMembers(conversation.getId())) {
+        for (GroupMemberView memberView : conversationMapper.findGroupMembers(conversation.getId(), userId)) {
             if ("owner".equals(memberView.getMemberRole()) || "admin".equals(memberView.getMemberRole())) {
                 notificationService.createNotification(
                         memberView.getUserId(),
@@ -1434,6 +1435,18 @@ public class ConversationService {
 
     private void pushConversationStateToUser(Long conversationId, Long userId) {
         pushAndGetConversationState(conversationId, userId);
+    }
+
+    public void refreshConversationStateForFriends(Long userId) {
+        List<Map<String, Object>> rows = conversationMapper.findSingleConversationIdsForUser(userId);
+        if (rows == null || rows.isEmpty()) {
+            return;
+        }
+        for (Map<String, Object> row : rows) {
+            Long conversationId = ((Number) row.get("conversation_id")).longValue();
+            Long friendUserId = ((Number) row.get("friend_user_id")).longValue();
+            pushConversationStateToUser(conversationId, friendUserId);
+        }
     }
 
     private void runAfterCommit(Runnable task) {

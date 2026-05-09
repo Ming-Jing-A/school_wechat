@@ -8,9 +8,11 @@ import java.time.LocalDateTime;
 public class GroupMemberView {
     private Long userId;
     private String nickname;
+    private String username;
     private String avatarUrl;
     private String memberRole;
     private String displayName;
+    private String remarkName;
     private String joinSource;
     private Long inviterUserId;
     private Integer isMuted;

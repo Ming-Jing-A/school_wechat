@@ -5,6 +5,7 @@ import lombok.Data;
 @Data
 public class FriendView {
     private Long friendUserId;
+    private String username;
     private String remarkName;
     private Integer isStarred;
     private Integer isMuted;

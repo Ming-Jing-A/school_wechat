@@ -35,7 +35,7 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
     public void afterConnectionEstablished(WebSocketSession session) {
         AuthSession authSession = getRequiredAuthSession(session);
         sessionManager.register(authSession, session);
-        authMapper.updateDeviceActive(authSession.getDeviceId());
+        authMapper.updateDeviceActiveThrottled(authSession.getDeviceId());
         pushService.pushConnected(authSession.getUserId(), Map.of(
                 "userId", authSession.getUserId(),
                 "deviceId", authSession.getDeviceId(),

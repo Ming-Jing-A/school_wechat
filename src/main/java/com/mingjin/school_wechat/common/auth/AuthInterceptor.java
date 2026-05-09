@@ -30,9 +30,9 @@ public class AuthInterceptor implements HandlerInterceptor {
         if (authSession == null) {
             throw new BusinessException("登录会话不存在");
         }
-        authMapper.updateSessionActive(authSession.getSessionId());
+        authMapper.updateSessionActiveThrottled(authSession.getSessionId());
         if (authSession.getDeviceId() != null) {
-            authMapper.updateDeviceActive(authSession.getDeviceId());
+            authMapper.updateDeviceActiveThrottled(authSession.getDeviceId());
         }
         AuthContext.set(authSession);
         return true;

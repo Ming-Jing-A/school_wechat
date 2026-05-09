@@ -169,11 +169,27 @@ public interface AuthMapper {
     int updateDeviceActive(@Param("deviceId") Long deviceId);
 
     @Update("""
+            UPDATE user_device
+            SET last_active_at = NOW(), is_online = 1
+            WHERE id = #{deviceId}
+              AND last_active_at < DATE_SUB(NOW(), INTERVAL 60 SECOND)
+            """)
+    int updateDeviceActiveThrottled(@Param("deviceId") Long deviceId);
+
+    @Update("""
             UPDATE user_login_session
             SET last_active_at = NOW()
             WHERE id = #{sessionId}
             """)
     int updateSessionActive(@Param("sessionId") Long sessionId);
+
+    @Update("""
+            UPDATE user_login_session
+            SET last_active_at = NOW()
+            WHERE id = #{sessionId}
+              AND last_active_at < DATE_SUB(NOW(), INTERVAL 60 SECOND)
+            """)
+    int updateSessionActiveThrottled(@Param("sessionId") Long sessionId);
 
     @Update("""
             UPDATE user_login_session

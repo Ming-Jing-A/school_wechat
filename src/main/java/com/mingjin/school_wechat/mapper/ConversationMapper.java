@@ -31,6 +31,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 @Mapper
 public interface ConversationMapper {
@@ -40,10 +41,13 @@ public interface ConversationMapper {
                    c.conversation_type,
                    CASE
                        WHEN c.conversation_type = 'single' THEN (
-                           SELECT COALESCE(f.remark_name, u.nickname)
+                           SELECT CASE
+                                      WHEN f.remark_name IS NOT NULL AND f.remark_name != u.nickname AND f.remark_name != u.username THEN f.remark_name
+                                      ELSE COALESCE(u.nickname, u.username)
+                                  END
                            FROM conversation_member cm2
                            JOIN wechat_user u ON u.id = cm2.user_id
-                           LEFT JOIN friendship f ON f.user_id = #{userId} AND f.friend_user_id = u.id
+                           LEFT JOIN friendship f ON f.user_id = #{userId} AND f.friend_user_id = u.id AND f.status = 1
                            WHERE cm2.conversation_id = c.id AND cm2.user_id <> #{userId}
                            LIMIT 1
                        )
@@ -94,10 +98,13 @@ public interface ConversationMapper {
                    c.conversation_type,
                    CASE
                        WHEN c.conversation_type = 'single' THEN (
-                           SELECT COALESCE(f.remark_name, u.nickname)
+                           SELECT CASE
+                                      WHEN f.remark_name IS NOT NULL AND f.remark_name != u.nickname AND f.remark_name != u.username THEN f.remark_name
+                                      ELSE COALESCE(u.nickname, u.username)
+                                  END
                            FROM conversation_member cm2
                            JOIN wechat_user u ON u.id = cm2.user_id
-                           LEFT JOIN friendship f ON f.user_id = #{userId} AND f.friend_user_id = u.id
+                           LEFT JOIN friendship f ON f.user_id = #{userId} AND f.friend_user_id = u.id AND f.status = 1
                            WHERE cm2.conversation_id = c.id AND cm2.user_id <> #{userId}
                            LIMIT 1
                        )
@@ -218,9 +225,17 @@ public interface ConversationMapper {
     @Select("""
             SELECT cm.user_id,
                    u.nickname,
+                   u.username,
                    u.avatar_url,
                    cm.member_role,
-                   cm.display_name,
+                   CASE
+                       WHEN cm.display_name IS NOT NULL AND cm.display_name != u.nickname AND cm.display_name != u.username THEN cm.display_name
+                       ELSE NULL
+                   END AS display_name,
+                   CASE
+                       WHEN f.remark_name IS NOT NULL AND f.remark_name != u.nickname AND f.remark_name != u.username THEN f.remark_name
+                       ELSE NULL
+                   END AS remark_name,
                    cm.join_source,
                    cm.inviter_user_id,
                    cm.is_muted,
@@ -229,6 +244,7 @@ public interface ConversationMapper {
                    cm.status
             FROM conversation_member cm
             JOIN wechat_user u ON u.id = cm.user_id
+            LEFT JOIN friendship f ON f.user_id = #{userId} AND f.friend_user_id = cm.user_id AND f.status = 1
             WHERE cm.conversation_id = #{conversationId}
               AND cm.status = 1
             ORDER BY CASE cm.member_role
@@ -238,7 +254,8 @@ public interface ConversationMapper {
                      END,
                      cm.joined_at ASC
             """)
-    List<GroupMemberView> findGroupMembers(@Param("conversationId") Long conversationId);
+    List<GroupMemberView> findGroupMembers(@Param("conversationId") Long conversationId,
+                                            @Param("userId") Long userId);
 
     @Insert("""
             INSERT INTO conversation (
@@ -396,6 +413,16 @@ public interface ConversationMapper {
             LIMIT 1
             """)
     Long findSingleConversationId(@Param("userId") Long userId, @Param("friendUserId") Long friendUserId);
+
+    @Select("""
+            SELECT c.id AS conversation_id, cm2.user_id AS friend_user_id
+            FROM conversation c
+            JOIN conversation_member cm ON cm.conversation_id = c.id AND cm.user_id = #{userId} AND cm.status = 1
+            JOIN conversation_member cm2 ON cm2.conversation_id = c.id AND cm2.user_id != #{userId} AND cm2.status = 1
+            WHERE c.conversation_type = 'single'
+              AND c.status = 1
+            """)
+    List<Map<String, Object>> findSingleConversationIdsForUser(@Param("userId") Long userId);
 
     @Select("""
             SELECT user_id
@@ -789,7 +816,15 @@ public interface ConversationMapper {
                    m.conversation_id,
                    m.sender_user_id,
                    u.nickname AS sender_nickname,
-                   cm.display_name AS sender_display_name,
+                   u.username AS sender_username,
+                   CASE
+                       WHEN cm.display_name IS NOT NULL AND cm.display_name != u.nickname AND cm.display_name != u.username THEN cm.display_name
+                       ELSE NULL
+                   END AS sender_display_name,
+                   CASE
+                       WHEN f.remark_name IS NOT NULL AND f.remark_name != u.nickname AND f.remark_name != u.username THEN f.remark_name
+                       ELSE NULL
+                   END AS sender_remark_name,
                    u.avatar_url AS sender_avatar_url,
                    m.message_type,
                    m.message_status,
@@ -798,7 +833,10 @@ public interface ConversationMapper {
                    m.quote_message_id,
                    qm.sender_user_id AS quote_sender_user_id,
                    qu.nickname AS quote_sender_nickname,
-                   qcm.display_name AS quote_sender_display_name,
+                   CASE
+                       WHEN qcm.display_name IS NOT NULL AND qcm.display_name != qu.nickname AND qcm.display_name != qu.username THEN qcm.display_name
+                       ELSE NULL
+                   END AS quote_sender_display_name,
                    qm.message_type AS quote_message_type,
                    qm.content AS quote_message_content,
                    m.sent_at,
@@ -813,6 +851,7 @@ public interface ConversationMapper {
             FROM chat_message m
             JOIN wechat_user u ON u.id = m.sender_user_id
             LEFT JOIN conversation_member cm ON cm.conversation_id = m.conversation_id AND cm.user_id = m.sender_user_id AND cm.status = 1
+            LEFT JOIN friendship f ON f.user_id = #{userId} AND f.friend_user_id = m.sender_user_id AND f.status = 1
             JOIN message_user_status mus ON mus.message_id = m.id AND mus.user_id = #{userId} AND mus.is_deleted_for_me = 0
             LEFT JOIN conversation_user_setting cus
                 ON cus.conversation_id = m.conversation_id
@@ -838,7 +877,9 @@ public interface ConversationMapper {
                    page.conversation_id,
                    page.sender_user_id,
                    page.sender_nickname,
+                   page.sender_username,
                    page.sender_display_name,
+                   page.sender_remark_name,
                    page.sender_avatar_url,
                    page.message_type,
                    page.message_status,
@@ -864,7 +905,15 @@ public interface ConversationMapper {
                        m.conversation_id,
                        m.sender_user_id,
                        u.nickname AS sender_nickname,
-                       cm.display_name AS sender_display_name,
+                       u.username AS sender_username,
+                       CASE
+                           WHEN cm.display_name IS NOT NULL AND cm.display_name != u.nickname AND cm.display_name != u.username THEN cm.display_name
+                           ELSE NULL
+                       END AS sender_display_name,
+                       CASE
+                           WHEN f.remark_name IS NOT NULL AND f.remark_name != u.nickname AND f.remark_name != u.username THEN f.remark_name
+                           ELSE NULL
+                       END AS sender_remark_name,
                        u.avatar_url AS sender_avatar_url,
                        m.message_type,
                        m.message_status,
@@ -873,7 +922,10 @@ public interface ConversationMapper {
                        m.quote_message_id,
                        qm.sender_user_id AS quote_sender_user_id,
                        qu.nickname AS quote_sender_nickname,
-                       qcm.display_name AS quote_sender_display_name,
+                       CASE
+                           WHEN qcm.display_name IS NOT NULL AND qcm.display_name != qu.nickname AND qcm.display_name != qu.username THEN qcm.display_name
+                           ELSE NULL
+                       END AS quote_sender_display_name,
                        qm.message_type AS quote_message_type,
                        qm.content AS quote_message_content,
                        m.sent_at,
@@ -888,6 +940,7 @@ public interface ConversationMapper {
                 FROM chat_message m
                 JOIN wechat_user u ON u.id = m.sender_user_id
                 LEFT JOIN conversation_member cm ON cm.conversation_id = m.conversation_id AND cm.user_id = m.sender_user_id AND cm.status = 1
+                LEFT JOIN friendship f ON f.user_id = #{userId} AND f.friend_user_id = m.sender_user_id AND f.status = 1
                 JOIN message_user_status mus ON mus.message_id = m.id AND mus.user_id = #{userId} AND mus.is_deleted_for_me = 0
                 LEFT JOIN conversation_user_setting cus
                     ON cus.conversation_id = m.conversation_id
@@ -919,7 +972,9 @@ public interface ConversationMapper {
                    page.conversation_id,
                    page.sender_user_id,
                    page.sender_nickname,
+                   page.sender_username,
                    page.sender_display_name,
+                   page.sender_remark_name,
                    page.sender_avatar_url,
                    page.message_type,
                    page.message_status,
@@ -945,7 +1000,15 @@ public interface ConversationMapper {
                        m.conversation_id,
                        m.sender_user_id,
                        u.nickname AS sender_nickname,
-                       cm.display_name AS sender_display_name,
+                       u.username AS sender_username,
+                       CASE
+                           WHEN cm.display_name IS NOT NULL AND cm.display_name != u.nickname AND cm.display_name != u.username THEN cm.display_name
+                           ELSE NULL
+                       END AS sender_display_name,
+                       CASE
+                           WHEN f.remark_name IS NOT NULL AND f.remark_name != u.nickname AND f.remark_name != u.username THEN f.remark_name
+                           ELSE NULL
+                       END AS sender_remark_name,
                        u.avatar_url AS sender_avatar_url,
                        m.message_type,
                        m.message_status,
@@ -954,7 +1017,10 @@ public interface ConversationMapper {
                        m.quote_message_id,
                        qm.sender_user_id AS quote_sender_user_id,
                        qu.nickname AS quote_sender_nickname,
-                       qcm.display_name AS quote_sender_display_name,
+                       CASE
+                           WHEN qcm.display_name IS NOT NULL AND qcm.display_name != qu.nickname AND qcm.display_name != qu.username THEN qcm.display_name
+                           ELSE NULL
+                       END AS quote_sender_display_name,
                        qm.message_type AS quote_message_type,
                        qm.content AS quote_message_content,
                        m.sent_at,
@@ -969,6 +1035,7 @@ public interface ConversationMapper {
                 FROM chat_message m
                 JOIN wechat_user u ON u.id = m.sender_user_id
                 LEFT JOIN conversation_member cm ON cm.conversation_id = m.conversation_id AND cm.user_id = m.sender_user_id AND cm.status = 1
+                LEFT JOIN friendship f ON f.user_id = #{userId} AND f.friend_user_id = m.sender_user_id AND f.status = 1
                 JOIN message_user_status mus ON mus.message_id = m.id AND mus.user_id = #{userId} AND mus.is_deleted_for_me = 0
                 LEFT JOIN conversation_user_setting cus
                     ON cus.conversation_id = m.conversation_id
@@ -1069,7 +1136,15 @@ public interface ConversationMapper {
                    m.conversation_id,
                    m.sender_user_id,
                    u.nickname AS sender_nickname,
-                   cm.display_name AS sender_display_name,
+                   u.username AS sender_username,
+                   CASE
+                       WHEN cm.display_name IS NOT NULL AND cm.display_name != u.nickname AND cm.display_name != u.username THEN cm.display_name
+                       ELSE NULL
+                   END AS sender_display_name,
+                   CASE
+                       WHEN f.remark_name IS NOT NULL AND f.remark_name != u.nickname AND f.remark_name != u.username THEN f.remark_name
+                       ELSE NULL
+                   END AS sender_remark_name,
                    u.avatar_url AS sender_avatar_url,
                    m.message_type,
                    m.message_status,
@@ -1078,7 +1153,10 @@ public interface ConversationMapper {
                    m.quote_message_id,
                    qm.sender_user_id AS quote_sender_user_id,
                    qu.nickname AS quote_sender_nickname,
-                   qcm.display_name AS quote_sender_display_name,
+                   CASE
+                       WHEN qcm.display_name IS NOT NULL AND qcm.display_name != qu.nickname AND qcm.display_name != qu.username THEN qcm.display_name
+                       ELSE NULL
+                   END AS quote_sender_display_name,
                    qm.message_type AS quote_message_type,
                    qm.content AS quote_message_content,
                    m.sent_at,
@@ -1093,6 +1171,7 @@ public interface ConversationMapper {
             FROM chat_message m
             JOIN wechat_user u ON u.id = m.sender_user_id
             LEFT JOIN conversation_member cm ON cm.conversation_id = m.conversation_id AND cm.user_id = m.sender_user_id AND cm.status = 1
+            LEFT JOIN friendship f ON f.user_id = #{userId} AND f.friend_user_id = m.sender_user_id AND f.status = 1
             LEFT JOIN chat_message qm ON qm.id = m.quote_message_id
             LEFT JOIN wechat_user qu ON qu.id = qm.sender_user_id
             LEFT JOIN conversation_member qcm ON qcm.conversation_id = m.conversation_id AND qcm.user_id = qm.sender_user_id AND qcm.status = 1
@@ -1101,7 +1180,8 @@ public interface ConversationMapper {
             WHERE m.id = #{messageId}
             LIMIT 1
             """)
-    ConversationMessageView findMessageById(@Param("messageId") Long messageId);
+    ConversationMessageView findMessageById(@Param("messageId") Long messageId,
+                                             @Param("userId") Long userId);
 
     @Select("""
             SELECT MAX(id)
