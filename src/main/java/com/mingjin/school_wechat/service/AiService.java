@@ -1,0 +1,182 @@
+package com.mingjin.school_wechat.service;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mingjin.school_wechat.common.exception.BusinessException;
+import com.mingjin.school_wechat.model.request.AiChatRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.MediaType;
+import org.springframework.stereotype.Service;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
+
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+@Service
+public class AiService {
+
+    private static final Logger log = LoggerFactory.getLogger(AiService.class);
+
+    private final ObjectMapper objectMapper;
+
+    public AiService(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
+
+    public SseEmitter streamChat(AiChatRequest request) {
+        final String apiKey = request.getApiKey() != null ? request.getApiKey() : "";
+        final String baseUrl = (request.getBaseUrl() == null || request.getBaseUrl().isBlank())
+                ? "http://host.docker.internal:11434/v1"
+                : request.getBaseUrl().replaceAll("/+$", "");
+        final String model = (request.getModel() == null || request.getModel().isBlank())
+                ? "deepseek-r1:7b"
+                : request.getModel();
+
+        SseEmitter emitter = new SseEmitter(300_000L);
+
+        new Thread(() -> {
+            try {
+                List<Map<String, String>> messages = new ArrayList<>();
+                if (request.getHistory() != null) {
+                    for (AiChatRequest.AiChatMessage msg : request.getHistory()) {
+                        Map<String, String> m = new HashMap<>();
+                        m.put("role", msg.getRole());
+                        m.put("content", msg.getContent());
+                        messages.add(m);
+                    }
+                }
+                Map<String, String> userMsg = new HashMap<>();
+                userMsg.put("role", "user");
+                userMsg.put("content", request.getMessage());
+                messages.add(userMsg);
+
+                Map<String, Object> body = new HashMap<>();
+                body.put("model", model);
+                body.put("messages", messages);
+                body.put("stream", true);
+
+                String jsonBody = objectMapper.writeValueAsString(body);
+
+                String endpoint = baseUrl + "/chat/completions";
+                log.info("AI 请求: endpoint={}, model={}, messagesCount={}", endpoint, model, messages.size());
+                HttpURLConnection conn = (HttpURLConnection) URI.create(endpoint).toURL().openConnection();
+                conn.setRequestMethod("POST");
+                conn.setDoOutput(true);
+                conn.setRequestProperty("Content-Type", "application/json");
+                if (!apiKey.isBlank()) {
+                    conn.setRequestProperty("Authorization", "Bearer " + apiKey);
+                }
+                conn.setRequestProperty("Accept", "text/event-stream");
+                conn.setConnectTimeout(30000);
+                conn.setReadTimeout(300000);
+
+                conn.getOutputStream().write(jsonBody.getBytes(StandardCharsets.UTF_8));
+                conn.getOutputStream().flush();
+
+                int responseCode = conn.getResponseCode();
+                if (responseCode != 200) {
+                    String errorMsg = "AI 服务返回错误 (HTTP " + responseCode + ")";
+                    java.io.InputStream errorStream = conn.getErrorStream();
+                    if (errorStream != null) {
+                        BufferedReader errorReader = new BufferedReader(new InputStreamReader(errorStream, StandardCharsets.UTF_8));
+                        StringBuilder errorBody = new StringBuilder();
+                        String line;
+                        while ((line = errorReader.readLine()) != null) {
+                            errorBody.append(line);
+                        }
+                        errorReader.close();
+                        errorMsg = errorBody.toString();
+                        if (errorMsg.isBlank()) {
+                            errorMsg = "AI 服务返回错误 (HTTP " + responseCode + ")";
+                        } else {
+                            try {
+                                JsonNode errorNode = objectMapper.readTree(errorMsg);
+                                if (errorNode.has("error") && errorNode.get("error").has("message")) {
+                                    errorMsg = errorNode.get("error").get("message").asText();
+                                }
+                            } catch (Exception ignored) {
+                            }
+                        }
+                    }
+                    emitter.send(SseEmitter.event().name("error").data(errorMsg));
+                    emitter.complete();
+                    return;
+                }
+
+                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream(), StandardCharsets.UTF_8));
+                String sseLine;
+                StringBuilder fullContent = new StringBuilder();
+                while ((sseLine = reader.readLine()) != null) {
+                    if (sseLine.isEmpty()) continue;
+
+                    String data = null;
+                    if (sseLine.startsWith("data: ")) {
+                        data = sseLine.substring(6).trim();
+                    } else if (sseLine.startsWith("data:")) {
+                        data = sseLine.substring(5).trim();
+                    } else {
+                        log.debug("AI SSE 非 data 行: {}", sseLine);
+                        continue;
+                    }
+
+                    if (data.isEmpty()) continue;
+                    if ("[DONE]".equals(data)) {
+                        emitter.send(SseEmitter.event().name("done").data(""));
+                        break;
+                    }
+
+                    try {
+                        JsonNode chunk = objectMapper.readTree(data);
+                        JsonNode choices = chunk.get("choices");
+                        if (choices != null && choices.isArray() && choices.size() > 0) {
+                            JsonNode delta = choices.get(0).get("delta");
+                            if (delta != null) {
+                                String content = null;
+                                if (delta.has("content") && !delta.get("content").isNull()) {
+                                    content = delta.get("content").asText();
+                                }
+                                if (content != null && !content.isEmpty()) {
+                                    fullContent.append(content);
+                                    emitter.send(SseEmitter.event().name("chunk").data(content));
+                                }
+                            }
+                        }
+                    } catch (Exception parseEx) {
+                        log.debug("AI SSE JSON 解析失败: {} data={}", parseEx.getMessage(), data.substring(0, Math.min(200, data.length())));
+                    }
+                }
+                reader.close();
+                conn.disconnect();
+                log.info("AI 回复完成, 总长度: {}", fullContent.length());
+                emitter.complete();
+            } catch (BusinessException e) {
+                try {
+                    emitter.send(SseEmitter.event().name("error").data(e.getMessage()));
+                    emitter.complete();
+                } catch (Exception ignored) {
+                    emitter.completeWithError(e);
+                }
+            } catch (Exception e) {
+                try {
+                    emitter.send(SseEmitter.event().name("error").data("AI 服务请求失败: " + e.getMessage()));
+                    emitter.complete();
+                } catch (Exception ignored) {
+                    emitter.completeWithError(e);
+                }
+            }
+        }).start();
+
+        emitter.onTimeout(() -> emitter.complete());
+        emitter.onError(e -> emitter.complete());
+
+        return emitter;
+    }
+}
