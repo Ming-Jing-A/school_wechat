@@ -45,6 +45,10 @@ public class AiService {
         new Thread(() -> {
             try {
                 List<Map<String, String>> messages = new ArrayList<>();
+                Map<String, String> systemMsg = new HashMap<>();
+                systemMsg.put("role", "system");
+                systemMsg.put("content", "你是一个智能助手。请严格遵循以下 Markdown 代码规范：\n1. 所有代码必须放在代码块中，使用 ```python、```java、```javascript 等带语言标识的代码块\n2. 代码块中的代码必须保持正确的缩进和换行，不要把所有代码写在一行\n3. 禁止输出不带代码块包裹的裸代码\n4. 禁止在代码块内把多行代码压缩成一行\n5. 非代码内容使用 Markdown 标题、加粗、列表、引用等格式化\n错误示例：for i in range(1,10):print()\n正确示例：\n```python\nfor i in range(1, 10):\n    print()\n```");
+                messages.add(systemMsg);
                 if (request.getHistory() != null) {
                     for (AiChatRequest.AiChatMessage msg : request.getHistory()) {
                         Map<String, String> m = new HashMap<>();
@@ -62,6 +66,10 @@ public class AiService {
                 body.put("model", model);
                 body.put("messages", messages);
                 body.put("stream", true);
+                body.put("temperature", 0.3);
+                body.put("top_p", 0.7);
+                body.put("presence_penalty", 0.1);
+                body.put("frequency_penalty", 0.1);
 
                 String jsonBody = objectMapper.writeValueAsString(body);
 
@@ -145,6 +153,9 @@ public class AiService {
                                 }
                                 if (content != null && !content.isEmpty()) {
                                     fullContent.append(content);
+                                    if (fullContent.length() <= 200) {
+                                        log.info("AI SSE chunk content 原始数据: [{}]", content.replace("\n", "\\n"));
+                                    }
                                     emitter.send(SseEmitter.event().name("chunk").data(content));
                                 }
                             }
