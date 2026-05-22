@@ -200,6 +200,24 @@ public interface AuthMapper {
             """)
     int invalidateSessionByToken(@Param("token") String token);
 
+    @Update("""
+            UPDATE user_login_session
+            SET status = 2,
+                last_active_at = NOW()
+            WHERE user_id = #{userId}
+              AND status = 1
+            """)
+    int invalidateAllSessionsByUserId(@Param("userId") Long userId);
+
+    @Update("""
+            UPDATE user_device
+            SET is_online = 0,
+                updated_at = NOW()
+            WHERE user_id = #{userId}
+              AND is_online = 1
+            """)
+    int setAllDevicesOfflineByUserId(@Param("userId") Long userId);
+
     @Select("""
             SELECT COUNT(1)
             FROM user_login_session

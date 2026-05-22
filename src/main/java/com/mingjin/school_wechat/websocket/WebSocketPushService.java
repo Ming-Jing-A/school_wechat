@@ -64,6 +64,10 @@ public class WebSocketPushService {
         send(session, buildPayload("server_notice", Map.of("message", message)));
     }
 
+    public void pushKickedOut(Long userId, String reason) {
+        sendToUser(userId, "kicked_out", Map.of("reason", reason != null ? reason : "您的账号已在其他设备登录"));
+    }
+
     private void sendToUser(Long userId, String type, Object data) {
         List<WebSocketSession> sessions = sessionManager.getUserSessions(userId);
         if (sessions.isEmpty()) {

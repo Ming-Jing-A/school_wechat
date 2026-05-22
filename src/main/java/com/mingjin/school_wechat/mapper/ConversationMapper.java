@@ -260,12 +260,12 @@ public interface ConversationMapper {
     @Insert("""
             INSERT INTO conversation (
                 conversation_type, name, avatar_url, owner_user_id, description_text,
-                announcement, join_rule, max_member_count, mute_all,
+                announcement, join_rule, max_member_count, mute_all, is_official,
                 last_message_id, last_message_type, last_message_content,
                 last_sender_id, last_message_at, status
             ) VALUES (
                 #{conversationType}, #{name}, #{avatarUrl}, #{ownerUserId}, #{descriptionText},
-                #{announcement}, #{joinRule}, #{maxMemberCount}, #{muteAll},
+                #{announcement}, #{joinRule}, #{maxMemberCount}, #{muteAll}, #{isOfficial},
                 #{lastMessageId}, #{lastMessageType}, #{lastMessageContent},
                 #{lastSenderId}, #{lastMessageAt}, #{status}
             )
@@ -1211,4 +1211,46 @@ public interface ConversationMapper {
             LIMIT 1
             """)
     Long findMessageSenderUserId(@Param("messageId") Long messageId);
+
+    @Select("""
+            SELECT *
+            FROM conversation
+            WHERE conversation_type = 'group'
+              AND status = 1
+              AND name = #{name}
+            LIMIT 10
+            """)
+    List<Conversation> searchGroupsByName(@Param("name") String name);
+
+    @Select("""
+            SELECT *
+            FROM conversation
+            WHERE conversation_type = 'group'
+              AND status = 1
+              AND name LIKE CONCAT('%', #{keyword}, '%')
+            LIMIT 20
+            """)
+    List<Conversation> searchGroupsByKeyword(@Param("keyword") String keyword);
+
+    @Select("""
+            SELECT *
+            FROM conversation
+            WHERE conversation_type = 'group'
+              AND status = 1
+              AND is_official = 1
+              AND name LIKE CONCAT('%', #{keyword}, '%')
+            LIMIT 20
+            """)
+    List<Conversation> searchOfficialGroupsByKeyword(@Param("keyword") String keyword);
+
+    @Select("""
+            SELECT *
+            FROM conversation
+            WHERE conversation_type = 'group'
+              AND status = 1
+              AND name LIKE CONCAT('%', #{keyword}, '%')
+            ORDER BY is_official DESC, id ASC
+            LIMIT 20
+            """)
+    List<Conversation> searchGroupsByKeywordOrdered(@Param("keyword") String keyword);
 }

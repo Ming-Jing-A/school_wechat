@@ -21,5 +21,6 @@ public class ConversationSummaryView {
     private Integer isHidden;
     private String draftContent;
     private Boolean isGroupOwner;
+    private Integer isOfficial;
     private String remark;
 }

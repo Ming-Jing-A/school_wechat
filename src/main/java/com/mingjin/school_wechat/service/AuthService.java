@@ -14,6 +14,7 @@ import com.mingjin.school_wechat.model.request.RegisterRequest;
 import com.mingjin.school_wechat.model.request.UpdateProfileRequest;
 import com.mingjin.school_wechat.model.view.LoginResponse;
 import com.mingjin.school_wechat.model.view.UserProfileView;
+import com.mingjin.school_wechat.websocket.WebSocketPushService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
@@ -32,12 +33,14 @@ public class AuthService {
     private final ConversationService conversationService;
     private final FriendMapper friendMapper;
     private final SyncEventService syncEventService;
+    private final WebSocketPushService webSocketPushService;
 
-    public AuthService(AuthMapper authMapper, ConversationService conversationService, FriendMapper friendMapper, SyncEventService syncEventService) {
+    public AuthService(AuthMapper authMapper, ConversationService conversationService, FriendMapper friendMapper, SyncEventService syncEventService, WebSocketPushService webSocketPushService) {
         this.authMapper = authMapper;
         this.conversationService = conversationService;
         this.friendMapper = friendMapper;
         this.syncEventService = syncEventService;
+        this.webSocketPushService = webSocketPushService;
     }
 
     @Transactional
@@ -154,6 +157,10 @@ public class AuthService {
                                              String browserName,
                                              String osName,
                                              String ipAddress) {
+        webSocketPushService.pushKickedOut(user.getId(), "您的账号已在其他设备登录");
+        authMapper.invalidateAllSessionsByUserId(user.getId());
+        authMapper.setAllDevicesOfflineByUserId(user.getId());
+
         LocalDateTime now = LocalDateTime.now();
         UserDevice device = new UserDevice();
         device.setUserId(user.getId());

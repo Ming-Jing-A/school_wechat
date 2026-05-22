@@ -57,6 +57,7 @@ public class ConversationService {
 
     private final ConversationMapper conversationMapper;
     private final AuthMapper authMapper;
+    private final javax.sql.DataSource dataSource;
     private final FileMapper fileMapper;
     private final FileService fileService;
     private final NotificationService notificationService;
@@ -66,6 +67,7 @@ public class ConversationService {
 
     public ConversationService(ConversationMapper conversationMapper,
                         AuthMapper authMapper,
+                        javax.sql.DataSource dataSource,
                         FileMapper fileMapper,
                         FileService fileService,
                         NotificationService notificationService,
@@ -74,12 +76,26 @@ public class ConversationService {
                         ObjectMapper objectMapper) {
         this.conversationMapper = conversationMapper;
         this.authMapper = authMapper;
+        this.dataSource = dataSource;
         this.fileMapper = fileMapper;
         this.fileService = fileService;
         this.notificationService = notificationService;
         this.syncEventService = syncEventService;
         this.webSocketPushService = webSocketPushService;
         this.objectMapper = objectMapper;
+    }
+
+    @jakarta.annotation.PostConstruct
+    public void init() {
+        try (var conn = dataSource.getConnection();
+             var rs = conn.getMetaData().getColumns(null, null, "conversation", "is_official")) {
+            if (!rs.next()) {
+                try (var stmt = conn.createStatement()) {
+                    stmt.execute("ALTER TABLE conversation ADD COLUMN is_official INT DEFAULT 0");
+                }
+            }
+        } catch (Exception e) {
+        }
     }
 
     public List<ConversationSummaryView> listConversations(Long userId) {
@@ -281,6 +297,27 @@ public class ConversationService {
         return summaryView;
     }
 
+    public List<ConversationSummaryView> searchGroupsByName(Long userId, String name) {
+        if (name == null || name.trim().isEmpty()) {
+            throw new BusinessException("群名不能为空");
+        }
+        List<Conversation> groups = conversationMapper.searchGroupsByKeywordOrdered(name.trim());
+        return groups.stream().map(conversation -> {
+            ConversationSummaryView view = new ConversationSummaryView();
+            view.setConversationId(conversation.getId());
+            view.setConversationType("group");
+            view.setConversationName(conversation.getName());
+            view.setAvatarUrl(conversation.getAvatarUrl());
+            view.setAnnouncement(conversation.getAnnouncement());
+            view.setUnreadCount(0);
+            view.setIsTop(0);
+            view.setIsMuted(0);
+            view.setIsHidden(0);
+            view.setIsOfficial(conversation.getIsOfficial() != null ? conversation.getIsOfficial() : 0);
+            return view;
+        }).collect(Collectors.toList());
+    }
+
     public List<GroupMemberView> listGroupMembers(Long userId, Long conversationId) {
         getRequiredGroupConversation(conversationId);
         getRequiredActiveMember(conversationId, userId);
@@ -419,6 +456,8 @@ public class ConversationService {
         return conversation.getId();
     }
 
+    private static final List<String> OFFICIAL_GROUP_NAMES = List.of("上网群");
+
     @Transactional
     public Conversation createGroup(Long creatorUserId, CreateGroupRequest request) {
         if (request == null || !StringUtils.hasText(request.getName())) {
@@ -427,6 +466,13 @@ public class ConversationService {
         String groupName = request.getName().trim();
         if (groupName.length() > 50) {
             throw new BusinessException("群名称不能超过50个字符");
+        }
+        boolean isOfficialName = OFFICIAL_GROUP_NAMES.stream().anyMatch(groupName::contains);
+        if (isOfficialName) {
+            WechatUser creator = authMapper.findUserById(creatorUserId);
+            if (creator == null || !"zxh".equals(creator.getUsername())) {
+                throw new BusinessException("包含\"" + String.join("\"、\"", OFFICIAL_GROUP_NAMES) + "\"的群名仅限管理员创建");
+            }
         }
         Set<Long> memberIds = new LinkedHashSet<>();
         memberIds.add(creatorUserId);
@@ -446,6 +492,7 @@ public class ConversationService {
         conversation.setJoinRule("approval");
         conversation.setMaxMemberCount(500);
         conversation.setMuteAll(0);
+        conversation.setIsOfficial(isOfficialName ? 1 : 0);
         conversation.setStatus(1);
         conversationMapper.insertConversation(conversation);
 

@@ -16,6 +16,7 @@ public class Conversation {
     private String joinRule;
     private Integer maxMemberCount;
     private Integer muteAll;
+    private Integer isOfficial;
     private Long lastMessageId;
     private String lastMessageType;
     private String lastMessageContent;

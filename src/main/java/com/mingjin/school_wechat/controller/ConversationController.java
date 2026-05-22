@@ -130,6 +130,11 @@ public class ConversationController {
         return ApiResponse.success(conversationService.searchGroupByConversationId(AuthContext.getUserId(), conversationId));
     }
 
+    @GetMapping("/conversations/search-by-name")
+    public ApiResponse<List<ConversationSummaryView>> searchGroupByName(@RequestParam String name) {
+        return ApiResponse.success(conversationService.searchGroupsByName(AuthContext.getUserId(), name));
+    }
+
     @PostMapping("/conversations/group")
     public ApiResponse<Conversation> createGroup(@RequestBody CreateGroupRequest request) {
         return ApiResponse.success("群聊创建成功", conversationService.createGroup(AuthContext.getUserId(), request));

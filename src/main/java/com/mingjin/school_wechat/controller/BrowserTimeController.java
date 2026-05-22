@@ -89,8 +89,7 @@ public class BrowserTimeController {
                 "infinite", infinite,
                 "remainingSeconds", infinite ? -1 : userRemainingSeconds.getOrDefault(username, DEFAULT_SECONDS),
                 "admin", ROOT_USERNAME.equals(username),
-                "contactQq", "2791464514",
-                "contactFriend", "名尽"
+                "contactGroup", "上网群"
         );
     }
 

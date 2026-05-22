@@ -11,7 +11,6 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.Arrays;
 
 @Configuration
 @RequiredArgsConstructor
@@ -34,9 +33,15 @@ public class WebMvcConfig implements WebMvcConfigurer {
                         "/api/auth/register",
                         "/api/ai/**",
                         "/api/browser/proxy",
+                        "/api/browser/proxy/**",
                         "/api/browser/search",
                         "/api/browser/bilibili-player",
-                        "/api/browser/empty"
+                        "/api/browser/bilibili-play-page",
+                        "/api/browser/bilibili-stream",
+                        "/api/browser/bilibili-video-stream",
+                        "/api/browser/stream",
+                        "/api/browser/empty",
+                        "/api/browser/ws-proxy"
                 );
     }
 
@@ -60,5 +65,9 @@ public class WebMvcConfig implements WebMvcConfigurer {
         Path uploadPath = Paths.get(localUploadDir).toAbsolutePath().normalize();
         registry.addResourceHandler("/uploads/**")
                 .addResourceLocations(uploadPath.toUri().toString());
+        Path frontendDist = Paths.get("web/dist").toAbsolutePath().normalize();
+        String distUri = frontendDist.toUri().toString();
+        registry.addResourceHandler("/assets/**")
+                .addResourceLocations(distUri + "assets/");
     }
 }
