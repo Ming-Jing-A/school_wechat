@@ -20,6 +20,7 @@ public class WechatUser {
     private String region;
     private String signature;
     private String friendAddPolicy;
+    private String theme;
     private Integer status;
     private LocalDateTime lastOnlineAt;
 }

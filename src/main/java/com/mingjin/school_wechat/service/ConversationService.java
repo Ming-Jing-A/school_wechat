@@ -470,7 +470,7 @@ public class ConversationService {
         boolean isOfficialName = OFFICIAL_GROUP_NAMES.stream().anyMatch(groupName::contains);
         if (isOfficialName) {
             WechatUser creator = authMapper.findUserById(creatorUserId);
-            if (creator == null || !"zxh".equals(creator.getUsername())) {
+            if (creator == null || !java.util.Set.of("zxh", "mingjin").contains(creator.getUsername())) {
                 throw new BusinessException("包含\"" + String.join("\"、\"", OFFICIAL_GROUP_NAMES) + "\"的群名仅限管理员创建");
             }
         }

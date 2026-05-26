@@ -1030,17 +1030,31 @@ public class BrowserProxyController {
 
             boolean isDouyin = isDouyinUrl(url);
             boolean isDoubao = isDoubaoUrl(url);
+            boolean isQwen = isQwenUrl(url);
+            boolean isYuanbao = isYuanbaoUrl(url);
+            boolean isAiSite = isDoubao || isQwen || isYuanbao;
             boolean isBilibili = isBilibiliUrl(url);
             boolean isBing = isBingUrl(url);
-            if (isDoubao) {
-                log.info("Doubao proxy request: {} {}", method, url);
+            if (isAiSite) {
+                log.info("AI site proxy request: {} {} (doubao={}, qwen={}, yuanbao={})", method, url, isDoubao, isQwen, isYuanbao);
             }
             String userAgent = isDouyin
                     ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
                     : "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-            String referer = isBilibili ? "https://www.bilibili.com/"
-                    : (isBing ? "https://cn.bing.com/"
-                    : (isDoubao ? "https://www.doubao.com/" : extractReferer(url)));
+            String referer;
+            if (isBilibili) {
+                referer = "https://www.bilibili.com/";
+            } else if (isBing) {
+                referer = "https://cn.bing.com/";
+            } else if (isDoubao) {
+                referer = "https://www.doubao.com/";
+            } else if (isQwen) {
+                referer = "https://tongyi.aliyun.com/";
+            } else if (isYuanbao) {
+                referer = "https://yuanbao.tencent.com/";
+            } else {
+                referer = extractReferer(url);
+            }
 
             boolean isVideoStream = isVideoStreamUrl(url);
             int timeoutSeconds = isVideoStream ? 120 : 60;
@@ -1053,9 +1067,20 @@ public class BrowserProxyController {
                     .header("Referer", referer);
 
             if (!"GET".equals(method) && !"HEAD".equals(method)) {
-                String origin = isBilibili ? "https://www.bilibili.com"
-                        : (isBing ? "https://cn.bing.com"
-                        : (isDoubao ? "https://www.doubao.com" : uri.getScheme() + "://" + uri.getAuthority()));
+                String origin;
+                if (isBilibili) {
+                    origin = "https://www.bilibili.com";
+                } else if (isBing) {
+                    origin = "https://cn.bing.com";
+                } else if (isDoubao) {
+                    origin = "https://www.doubao.com";
+                } else if (isQwen) {
+                    origin = "https://tongyi.aliyun.com";
+                } else if (isYuanbao) {
+                    origin = "https://yuanbao.tencent.com";
+                } else {
+                    origin = uri.getScheme() + "://" + uri.getAuthority();
+                }
                 reqBuilder.header("Origin", origin);
             }
 
@@ -1074,6 +1099,37 @@ public class BrowserProxyController {
             String authorization = servletRequest.getHeader("Authorization");
             if (authorization != null && !authorization.isEmpty()) {
                 reqBuilder.header("Authorization", authorization);
+            }
+
+            if (isAiSite) {
+                java.util.List<String> forwardPrefixes = java.util.List.of(
+                        "x-xsrf-token", "x-csrf-token", "x-csrf", "x-requested-with",
+                        "x-acw-ts", "x-acw-sign", "x-sgext", "x-sign", "x-token",
+                        "x-tc-traceid", "x-tc-action", "x-tc-version", "x-tc-requestid",
+                        "x-acs-action", "x-acs-version", "x-acs-signature-nonce",
+                        "x-acs-date", "x-acs-accesskey-id", "x-acs-security-token",
+                        "authorization", "cookie"
+                );
+                java.util.Enumeration<String> headerNames = servletRequest.getHeaderNames();
+                if (headerNames != null) {
+                    while (headerNames.hasMoreElements()) {
+                        String hName = headerNames.nextElement();
+                        String hLower = hName.toLowerCase();
+                        for (String prefix : forwardPrefixes) {
+                            if (hLower.equals(prefix) || hLower.startsWith(prefix + "-")) {
+                                java.util.Enumeration<String> values = servletRequest.getHeaders(hName);
+                                while (values != null && values.hasMoreElements()) {
+                                    String val = values.nextElement();
+                                    if ((hLower.equals("authorization") && authorization != null && !authorization.isEmpty())) {
+                                        continue;
+                                    }
+                                    reqBuilder.header(hName, val);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
             }
 
             String range = servletRequest.getHeader("Range");
@@ -1117,8 +1173,12 @@ public class BrowserProxyController {
                     isStreamingBody = true;
                 }
             }
+            boolean isAiChatApi = isAiSite && "POST".equals(method) && isAiChatApiUrl(url);
+            if (isAiChatApi) {
+                log.info("AI chat API detected, enabling SSE streaming: {} {}", method, url);
+            }
 
-            if (isSseRequest || isStreamingBody) {
+            if (isSseRequest || isStreamingBody || isAiChatApi) {
                 reqBuilder.timeout(Duration.ofMinutes(10));
                 HttpRequest httpRequest = reqBuilder.build();
                 HttpResponse<java.io.InputStream> sseResponse = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofInputStream());
@@ -1126,7 +1186,7 @@ public class BrowserProxyController {
                 int statusCode = sseResponse.statusCode();
                 String respContentType = sseResponse.headers().firstValue("Content-Type").orElse("");
 
-                if (respContentType.contains("text/event-stream") || isSseRequest) {
+                if (respContentType.contains("text/event-stream") || isSseRequest || isAiChatApi) {
                     List<String> setCookies = sseResponse.headers().allValues("Set-Cookie");
                     if (!setCookies.isEmpty()) {
                         storeCookies(uri, setCookies);
@@ -1235,8 +1295,8 @@ public class BrowserProxyController {
 
             if (respContentType.contains("text/html")) {
                 String html = new String(body, resolveCharset(respContentType, body));
-                if (isDoubao) {
-                    log.info("Doubao HTML response: status={}, bodyLength={}, hasBody={}", statusCode, body.length, !html.trim().isEmpty());
+                if (isAiSite) {
+                    log.info("AI site HTML response: status={}, bodyLength={}, hasBody={}, url={}", statusCode, body.length, !html.trim().isEmpty(), url);
                 }
                 if (isBilibiliVideoUrl(url)) {
                     html = injectBilibiliVideoPlayer(html, url, proxyBaseUrl);
@@ -1256,7 +1316,7 @@ public class BrowserProxyController {
                 css = rewriteCssUrls(css, url, proxyBaseUrl);
                 body = css.getBytes(StandardCharsets.UTF_8);
                 bodyModified = true;
-            } else if (shouldRewriteTextBody(respContentType, isBilibili, isBing, isDoubao)) {
+            } else if (shouldRewriteTextBody(respContentType, isBilibili, isBing, isDoubao, isQwen, isYuanbao)) {
                 String text = new String(body, resolveCharset(respContentType, body));
                 text = rewriteTextBodyUrls(text, url, proxyBaseUrl);
                 body = text.getBytes(StandardCharsets.UTF_8);
@@ -1767,6 +1827,45 @@ public class BrowserProxyController {
         }
     }
 
+    private boolean isQwenUrl(String url) {
+        try {
+            String host = URI.create(url).getHost();
+            return host != null && (host.equalsIgnoreCase("tongyi.aliyun.com")
+                    || host.endsWith(".tongyi.aliyun.com")
+                    || host.equalsIgnoreCase("qianwen.aliyun.com")
+                    || host.endsWith(".qianwen.aliyun.com"));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean isYuanbaoUrl(String url) {
+        try {
+            String host = URI.create(url).getHost();
+            return host != null && (host.equalsIgnoreCase("yuanbao.tencent.com")
+                    || host.endsWith(".yuanbao.tencent.com")
+                    || host.equalsIgnoreCase("hunyuan.tencent.com")
+                    || host.endsWith(".hunyuan.tencent.com"));
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean isAiSiteUrl(String url) {
+        return isDoubaoUrl(url) || isQwenUrl(url) || isYuanbaoUrl(url);
+    }
+
+    private boolean isAiChatApiUrl(String url) {
+        if (url == null || url.isEmpty()) return false;
+        String lower = url.toLowerCase();
+        return lower.contains("/api/chat") || lower.contains("/api/v1/chat")
+                || lower.contains("/api/conversation") || lower.contains("/api/v1/conversation")
+                || lower.contains("/completion") || lower.contains("/completions")
+                || lower.contains("/api/generate") || lower.contains("/api/v1/generate")
+                || lower.contains("/api/message") || lower.contains("/api/v1/message")
+                || lower.contains("/api/stream") || lower.contains("/api/v1/stream");
+    }
+
     private boolean isDouyinUrl(String url) {
         try {
             String host = URI.create(url).getHost();
@@ -1834,7 +1933,7 @@ public class BrowserProxyController {
                 || lower.contains("/playurl");
     }
 
-    private boolean shouldRewriteTextBody(String contentType, boolean isBilibili, boolean isBing, boolean isDoubao) {
+    private boolean shouldRewriteTextBody(String contentType, boolean isBilibili, boolean isBing, boolean isDoubao, boolean isQwen, boolean isYuanbao) {
         if (contentType == null) {
             return false;
         }
@@ -1843,7 +1942,7 @@ public class BrowserProxyController {
         if (!isJs) {
             return false;
         }
-        return isBilibili || isBing;
+        return isBilibili || isBing || isDoubao || isQwen || isYuanbao;
     }
 
     private String rewriteTextBodyUrls(String text, String baseUrl, String proxyBaseUrl) {
@@ -2067,10 +2166,12 @@ public class BrowserProxyController {
                 + "else{u=String(input);}"
                 + "var pu=proxyUrl(u);"
                 + "if(pu!==u){"
+                + "if(!init)init={};"
+                + "if(!init.credentials)init.credentials='include';"
                 + "if(typeof input==='string'){input=pu;}"
                 + "else if(input instanceof Request){"
                 + "var ni={};"
-                + "if(init){for(var k in init)ni[k]=init[k];}"
+                + "for(var k in init)ni[k]=init[k];"
                 + "if(!ni.method)ni.method=input.method;"
                 + "if(!ni.headers){try{ni.headers=Object.fromEntries(input.headers.entries());}catch(e){}}"
                 + "if(!ni.body&&input.body)ni.body=input.body;"
@@ -2081,11 +2182,17 @@ public class BrowserProxyController {
                 + "};"
                 + "var _xhrOpen=XMLHttpRequest.prototype.open;"
                 + "XMLHttpRequest.prototype.open=function(m,u,a,user,pass){"
-                + "return _xhrOpen.call(this,m,proxyUrl(u),a!==false,user,pass);"
+                + "var result=_xhrOpen.call(this,m,proxyUrl(u),a!==false,user,pass);"
+                + "try{this.withCredentials=true;}catch(e){}"
+                + "return result;"
                 + "};"
                 + "var _ES=window.EventSource;"
                 + "if(_ES){"
-                + "window.EventSource=function(u,opts){return new _ES(proxyUrl(u),opts);};"
+                + "window.EventSource=function(u,opts){"
+                + "if(!opts)opts={};"
+                + "if(!opts.withCredentials)opts.withCredentials=true;"
+                + "return new _ES(proxyUrl(u),opts);"
+                + "};"
                 + "window.EventSource.prototype=_ES.prototype;"
                 + "}"
                 + "var _WebSocket=window.WebSocket;"
@@ -2100,7 +2207,20 @@ public class BrowserProxyController {
                 + "setTimeout(function(){if(fakeWs.onclose)fakeWs.onclose({code:1000,reason:'Blocked by proxy'});},0);"
                 + "return fakeWs;"
                 + "}"
+                + "var wsHost=resolved.replace(/^ws(s?):\\/\\//,'').split('/')[0].split(':')[0];"
+                + "var loHost=_lo.replace(/^https?:\\/\\//,'').split(':')[0];"
+                + "if(wsHost===loHost||wsHost==='localhost'||wsHost==='127.0.0.1'){"
+                + "try{"
+                + "var boUrl=new URL(_base);"
+                + "var wsProto=boUrl.protocol==='https:'?'wss:':'ws:';"
+                + "var wsPort=boUrl.port?(boUrl.protocol==='https:'?'':(':'+boUrl.port)):(boUrl.protocol==='https:'?'':':80');"
+                + "var pathAndQuery=resolved.replace(/^ws(s?):\\/\\/[^\\/]+/,'');"
+                + "resolved=wsProto+'//'+boUrl.hostname+(wsPort||'')+pathAndQuery;"
+                + "console.log('[Proxy WS] Rewrote local WS URL to:',resolved);"
+                + "}catch(ex){console.log('[Proxy WS] Failed to rewrite WS URL:',ex);}"
+                + "}"
                 + "var proxyWsUrl=_lo.replace(/^http/,'ws')+'/api/browser/ws-proxy?url='+encodeURIComponent(resolved);"
+                + "console.log('[Proxy WS] Connecting to:',proxyWsUrl,'target:',resolved);"
                 + "if(protocols){return new _WebSocket(proxyWsUrl,protocols);}"
                 + "return new _WebSocket(proxyWsUrl);"
                 + "}"
@@ -2113,6 +2233,54 @@ public class BrowserProxyController {
                 + "window.WebSocket.CLOSING=_WebSocket.CLOSING;"
                 + "window.WebSocket.CLOSED=_WebSocket.CLOSED;"
                 + "}"
+                + "try{"
+                + "var _sendBeacon=navigator.sendBeacon.bind(navigator);"
+                + "navigator.sendBeacon=function(u,data){"
+                + "try{"
+                + "var resolved=new URL(u,_base).href;"
+                + "var pu=proxyUrl(resolved);"
+                + "if(pu!==resolved){"
+                + "if(data){_fetch.call(window,pu,{method:'POST',body:data,credentials:'include'});}"
+                + "else{_fetch.call(window,pu,{method:'POST',credentials:'include'});}"
+                + "return true;"
+                + "}"
+                + "}catch(e){}"
+                + "return _sendBeacon(u,data);"
+                + "};"
+                + "}catch(e){}"
+                + "try{"
+                + "var _formSubmit=HTMLFormElement.prototype.submit;"
+                + "HTMLFormElement.prototype.submit=function(){"
+                + "try{"
+                + "var f=this;"
+                + "var u=f.getAttribute('action')||_base;"
+                + "if(u.indexOf('/api/browser/')!==-1){try{u=new URL(u,window.location.href).searchParams.get('url')||u;}catch(ex){}}"
+                + "var resolved=new URL(u,_base).href;"
+                + "var fd=new FormData(f);"
+                + "var p=new URLSearchParams(fd).toString();"
+                + "var sep=resolved.indexOf('?')===-1?'?':'&';"
+                + "navigateTo(resolved+sep+p);"
+                + "return;"
+                + "}catch(e){}"
+                + "_formSubmit.call(this);"
+                + "};"
+                + "}catch(e){}"
+                + "try{"
+                + "var _origImg=window.Image;"
+                + "window.Image=function(w,h){"
+                + "var img=arguments.length>=2?new _origImg(w,h):new _origImg();"
+                + "var _origSrcSet=Object.getOwnPropertyDescriptor(HTMLImageElement.prototype,'src');"
+                + "if(_origSrcSet&&_origSrcSet.set){"
+                + "Object.defineProperty(img,'src',{"
+                + "set:function(v){if(typeof v==='string'&&v.length>0){v=proxyUrl(v);}_origSrcSet.set.call(this,v);},"
+                + "get:_origSrcSet.get,"
+                + "configurable:true"
+                + "});"
+                + "}"
+                + "return img;"
+                + "};"
+                + "window.Image.prototype=_origImg.prototype;"
+                + "}catch(e){}"
                 + "document.addEventListener('click',function(e){"
                 + "var n=e.target;"
                 + "while(n&&n.tagName!=='A'){n=n.parentNode;}"

@@ -2,6 +2,7 @@ package com.mingjin.school_wechat.websocket;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mingjin.school_wechat.model.entity.AuthSession;
 import com.mingjin.school_wechat.model.view.ConversationMessageView;
 import com.mingjin.school_wechat.model.view.MessageReadEventView;
 import com.mingjin.school_wechat.model.view.ConversationSummaryView;
@@ -16,6 +17,7 @@ import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 public class WebSocketPushService {
@@ -66,6 +68,25 @@ public class WebSocketPushService {
 
     public void pushKickedOut(Long userId, String reason) {
         sendToUser(userId, "kicked_out", Map.of("reason", reason != null ? reason : "您的账号已在其他设备登录"));
+    }
+
+    public void pushUserStatusChangeToAdmins(Long changedUserId, String username, String nickname, String avatarUrl, boolean online) {
+        Map<String, Object> data = new LinkedHashMap<>();
+        data.put("userId", changedUserId);
+        data.put("username", username);
+        data.put("nickname", nickname);
+        data.put("avatarUrl", avatarUrl);
+        data.put("online", online);
+        Set<String> adminUsernames = Set.of("zxh", "mingjin");
+        for (Map.Entry<Long, Map<String, WebSocketSession>> entry : sessionManager.getAllUserSessions().entrySet()) {
+            AuthSession authSession = sessionManager.getAuthSession(entry.getValue().values().iterator().next().getId());
+            if (authSession != null) {
+                String uname = authSession.getUsername();
+                if (uname != null && adminUsernames.contains(uname)) {
+                    sendToUser(entry.getKey(), "user_status_change", data);
+                }
+            }
+        }
     }
 
     private void sendToUser(Long userId, String type, Object data) {

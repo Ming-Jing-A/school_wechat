@@ -496,6 +496,7 @@ CREATE TABLE `wechat_user` (
   `region` varchar(100) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '地区',
   `signature` varchar(255) COLLATE utf8mb4_general_ci DEFAULT NULL COMMENT '个性签名',
   `friend_add_policy` varchar(20) COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'need_confirm' COMMENT 'need_confirm direct deny',
+  `theme` varchar(20) COLLATE utf8mb4_general_ci DEFAULT 'white' COMMENT '主题 white dark',
   `status` tinyint NOT NULL DEFAULT '1' COMMENT '1正常 2禁用',
   `last_online_at` datetime DEFAULT NULL COMMENT '最后在线时间',
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
@@ -507,6 +508,19 @@ CREATE TABLE `wechat_user` (
   UNIQUE KEY `uk_wechat_user_email` (`email`)
 ) ENGINE=InnoDB AUTO_INCREMENT=28 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='用户表';
 /*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Table structure for table `browser_time_setting`
+--
+
+DROP TABLE IF EXISTS `browser_time_setting`;
+CREATE TABLE `browser_time_setting` (
+  `user_id` bigint NOT NULL COMMENT '用户ID',
+  `remaining_seconds` int NOT NULL DEFAULT '0' COMMENT '剩余秒数，-1表示无限',
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`user_id`),
+  CONSTRAINT `fk_browser_time_setting_user` FOREIGN KEY (`user_id`) REFERENCES `wechat_user` (`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci COMMENT='上网时长设置表';
 
 --
 -- Dumping routines for database 'school_wechat'

@@ -23,7 +23,5 @@ mybatis:
     map-underscore-to-camel-case: true
 
 app:
-  cors:
-    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:5173}
   storage:
     local-upload-dir: ${APP_UPLOAD_DIR:uploads}

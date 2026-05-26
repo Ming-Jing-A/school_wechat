@@ -15,13 +15,16 @@ import com.mingjin.school_wechat.model.request.UpdateProfileRequest;
 import com.mingjin.school_wechat.model.view.LoginResponse;
 import com.mingjin.school_wechat.model.view.UserProfileView;
 import com.mingjin.school_wechat.websocket.WebSocketPushService;
+import com.mingjin.school_wechat.websocket.WebSocketSessionManager;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
+import org.springframework.web.socket.WebSocketSession;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -34,13 +37,15 @@ public class AuthService {
     private final FriendMapper friendMapper;
     private final SyncEventService syncEventService;
     private final WebSocketPushService webSocketPushService;
+    private final WebSocketSessionManager webSocketSessionManager;
 
-    public AuthService(AuthMapper authMapper, ConversationService conversationService, FriendMapper friendMapper, SyncEventService syncEventService, WebSocketPushService webSocketPushService) {
+    public AuthService(AuthMapper authMapper, ConversationService conversationService, FriendMapper friendMapper, SyncEventService syncEventService, WebSocketPushService webSocketPushService, WebSocketSessionManager webSocketSessionManager) {
         this.authMapper = authMapper;
         this.conversationService = conversationService;
         this.friendMapper = friendMapper;
         this.syncEventService = syncEventService;
         this.webSocketPushService = webSocketPushService;
+        this.webSocketSessionManager = webSocketSessionManager;
     }
 
     @Transactional
@@ -91,6 +96,41 @@ public class AuthService {
         if (AuthContext.getDeviceId() != null && authMapper.countActiveSessionsByDevice(AuthContext.getDeviceId()) == 0) {
             authMapper.updateDeviceOnlineStatus(AuthContext.getDeviceId(), 0);
         }
+    }
+
+    @Transactional
+    public void deleteAccount() {
+        WechatUser user = getRequiredCurrentUserEntity();
+        Long userId = user.getId();
+
+        authMapper.deleteBrowserTimeSettingByUserId(userId);
+        authMapper.deleteSyncEventsByUserId(userId);
+        authMapper.deleteNotificationsByUserId(userId);
+        authMapper.deleteMessageUserStatusByUserId(userId);
+        authMapper.deleteBlacklistByUserId(userId);
+        authMapper.deleteLoginSessionsByUserId(userId);
+        authMapper.deleteDevicesByUserId(userId);
+        authMapper.deleteFriendshipsByUserId(userId);
+        authMapper.deleteFriendRequestsByUserId(userId);
+        authMapper.deleteFriendGroupsByUserId(userId);
+        authMapper.deleteConversationUserSettingsByUserId(userId);
+        authMapper.deleteConversationMembersByUserId(userId);
+        authMapper.deleteConversationJoinRequestsByUserId(userId);
+        authMapper.softDeleteUser(userId);
+
+        runAfterCommit(() -> {
+            webSocketPushService.pushKickedOut(userId, "您的账号已注销");
+            List<WebSocketSession> sessions = new ArrayList<>(webSocketSessionManager.getUserSessions(userId));
+            for (WebSocketSession session : sessions) {
+                try {
+                    if (session.isOpen()) {
+                        session.close();
+                    }
+                } catch (Exception ignored) {
+                }
+                webSocketSessionManager.unregister(session);
+            }
+        });
     }
 
     @Transactional
@@ -197,6 +237,7 @@ public class AuthService {
         response.setNickname(user.getNickname());
         response.setAvatarUrl(user.getAvatarUrl());
         response.setWechatNo(user.getWechatNo());
+        response.setTheme(user.getTheme());
         return response;
     }
 
@@ -301,6 +342,7 @@ public class AuthService {
         profileView.setRegion(user.getRegion());
         profileView.setSignature(user.getSignature());
         profileView.setFriendAddPolicy(user.getFriendAddPolicy());
+        profileView.setTheme(user.getTheme());
         profileView.setStatus(user.getStatus());
         profileView.setLastOnlineAt(user.getLastOnlineAt());
         return profileView;

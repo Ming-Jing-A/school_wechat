@@ -21,9 +21,6 @@ public class WebMvcConfig implements WebMvcConfigurer {
     @Value("${app.storage.local-upload-dir:uploads}")
     private String localUploadDir;
 
-    @Value("${app.cors.allowed-origins:http://localhost:5173,http://127.0.0.1:5173}")
-    private String allowedOrigins;
-
     @Override
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(authInterceptor)

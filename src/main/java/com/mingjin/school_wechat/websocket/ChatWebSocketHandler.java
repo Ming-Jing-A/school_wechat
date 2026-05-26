@@ -41,6 +41,13 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
                 "deviceId", authSession.getDeviceId(),
                 "sessionId", session.getId()
         ));
+        pushService.pushUserStatusChangeToAdmins(
+                authSession.getUserId(),
+                authSession.getUsername(),
+                authSession.getNickname(),
+                authSession.getAvatarUrl(),
+                true
+        );
     }
 
     @Override
@@ -57,12 +64,48 @@ public class ChatWebSocketHandler extends TextWebSocketHandler {
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        AuthSession authSession = sessionManager.getAuthSession(session.getId());
         sessionManager.unregister(session);
+        if (authSession != null) {
+            Long userId = authSession.getUserId();
+            Long deviceId = authSession.getDeviceId();
+            boolean nowOffline = sessionManager.getUserSessions(userId).isEmpty();
+            if (nowOffline) {
+                if (deviceId != null) {
+                    authMapper.updateDeviceOnlineStatus(deviceId, 0);
+                }
+            }
+            pushService.pushUserStatusChangeToAdmins(
+                    userId,
+                    authSession.getUsername(),
+                    authSession.getNickname(),
+                    authSession.getAvatarUrl(),
+                    !nowOffline
+            );
+        }
     }
 
     @Override
     public void handleTransportError(WebSocketSession session, Throwable exception) throws Exception {
+        AuthSession authSession = sessionManager.getAuthSession(session.getId());
         sessionManager.unregister(session);
+        if (authSession != null) {
+            Long userId = authSession.getUserId();
+            Long deviceId = authSession.getDeviceId();
+            boolean nowOffline = sessionManager.getUserSessions(userId).isEmpty();
+            if (nowOffline) {
+                if (deviceId != null) {
+                    authMapper.updateDeviceOnlineStatus(deviceId, 0);
+                }
+            }
+            pushService.pushUserStatusChangeToAdmins(
+                    userId,
+                    authSession.getUsername(),
+                    authSession.getNickname(),
+                    authSession.getAvatarUrl(),
+                    !nowOffline
+            );
+        }
         if (session.isOpen()) {
             session.close(CloseStatus.SERVER_ERROR);
         }

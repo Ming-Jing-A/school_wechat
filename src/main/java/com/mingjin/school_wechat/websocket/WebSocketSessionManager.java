@@ -55,4 +55,8 @@ public class WebSocketSessionManager {
     public AuthSession getAuthSession(String sessionId) {
         return sessionAuthIndex.get(sessionId);
     }
+
+    public Map<Long, Map<String, WebSocketSession>> getAllUserSessions() {
+        return userSessions;
+    }
 }

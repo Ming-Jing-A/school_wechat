@@ -27,6 +27,7 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 @Mapper
 public interface AuthMapper {
@@ -52,6 +53,7 @@ public interface AuthMapper {
             SELECT COUNT(1)
             FROM wechat_user
             WHERE username = #{username}
+              AND status = 1
             """)
     int countByUsername(@Param("username") String username);
 
@@ -59,6 +61,7 @@ public interface AuthMapper {
             SELECT COUNT(1)
             FROM wechat_user
             WHERE wechat_no = #{wechatNo}
+              AND status = 1
             """)
     int countByWechatNo(@Param("wechatNo") String wechatNo);
 
@@ -66,6 +69,7 @@ public interface AuthMapper {
             SELECT COUNT(1)
             FROM wechat_user
             WHERE phone = #{phone}
+              AND status = 1
             """)
     int countByPhone(@Param("phone") String phone);
 
@@ -73,6 +77,7 @@ public interface AuthMapper {
             SELECT COUNT(1)
             FROM wechat_user
             WHERE email = #{email}
+              AND status = 1
             """)
     int countByEmail(@Param("email") String email);
 
@@ -81,6 +86,7 @@ public interface AuthMapper {
             FROM wechat_user
             WHERE wechat_no = #{wechatNo}
               AND id <> #{userId}
+              AND status = 1
             """)
     int countByWechatNoExcludeUser(@Param("wechatNo") String wechatNo, @Param("userId") Long userId);
 
@@ -89,6 +95,7 @@ public interface AuthMapper {
             FROM wechat_user
             WHERE phone = #{phone}
               AND id <> #{userId}
+              AND status = 1
             """)
     int countByPhoneExcludeUser(@Param("phone") String phone, @Param("userId") Long userId);
 
@@ -97,6 +104,7 @@ public interface AuthMapper {
             FROM wechat_user
             WHERE email = #{email}
               AND id <> #{userId}
+              AND status = 1
             """)
     int countByEmailExcludeUser(@Param("email") String email, @Param("userId") Long userId);
 
@@ -143,6 +151,7 @@ public interface AuthMapper {
                    s.user_id,
                    s.device_id,
                    s.session_token,
+                   u.username,
                    u.nickname,
                    u.avatar_url
             FROM user_login_session s
@@ -256,8 +265,63 @@ public interface AuthMapper {
                 region = #{region},
                 signature = #{signature},
                 friend_add_policy = #{friendAddPolicy},
+                theme = #{theme},
                 updated_at = NOW()
             WHERE id = #{id}
             """)
     int updateUserProfile(WechatUser user);
+
+    @Select("""
+            SELECT u.id, u.username, u.nickname, u.wechat_no, u.avatar_url,
+                   u.status, u.last_online_at
+            FROM wechat_user u
+            WHERE u.status = 1
+            ORDER BY u.id
+            """)
+    List<Map<String, Object>> findAllUsersBasic();
+
+    @Update("UPDATE wechat_user SET theme = #{theme}, updated_at = NOW() WHERE id = #{userId}")
+    int updateTheme(@Param("userId") Long userId, @Param("theme") String theme);
+
+    @org.apache.ibatis.annotations.Delete("DELETE FROM browser_time_setting WHERE user_id = #{userId}")
+    int deleteBrowserTimeSettingByUserId(@Param("userId") Long userId);
+
+    @org.apache.ibatis.annotations.Delete("DELETE FROM user_sync_event WHERE user_id = #{userId} OR source_device_id IN (SELECT id FROM user_device WHERE user_id = #{userId})")
+    int deleteSyncEventsByUserId(@Param("userId") Long userId);
+
+    @org.apache.ibatis.annotations.Delete("DELETE FROM user_notification WHERE user_id = #{userId}")
+    int deleteNotificationsByUserId(@Param("userId") Long userId);
+
+    @org.apache.ibatis.annotations.Delete("DELETE FROM message_user_status WHERE user_id = #{userId}")
+    int deleteMessageUserStatusByUserId(@Param("userId") Long userId);
+
+    @org.apache.ibatis.annotations.Delete("DELETE FROM user_blacklist WHERE user_id = #{userId} OR blocked_user_id = #{userId}")
+    int deleteBlacklistByUserId(@Param("userId") Long userId);
+
+    @org.apache.ibatis.annotations.Delete("DELETE FROM user_login_session WHERE user_id = #{userId}")
+    int deleteLoginSessionsByUserId(@Param("userId") Long userId);
+
+    @org.apache.ibatis.annotations.Delete("DELETE FROM user_device WHERE user_id = #{userId}")
+    int deleteDevicesByUserId(@Param("userId") Long userId);
+
+    @org.apache.ibatis.annotations.Delete("DELETE FROM friendship WHERE user_id = #{userId} OR friend_user_id = #{userId}")
+    int deleteFriendshipsByUserId(@Param("userId") Long userId);
+
+    @org.apache.ibatis.annotations.Delete("DELETE FROM friend_request WHERE from_user_id = #{userId} OR to_user_id = #{userId}")
+    int deleteFriendRequestsByUserId(@Param("userId") Long userId);
+
+    @org.apache.ibatis.annotations.Delete("DELETE FROM friend_group WHERE user_id = #{userId}")
+    int deleteFriendGroupsByUserId(@Param("userId") Long userId);
+
+    @org.apache.ibatis.annotations.Delete("DELETE FROM conversation_user_setting WHERE user_id = #{userId}")
+    int deleteConversationUserSettingsByUserId(@Param("userId") Long userId);
+
+    @org.apache.ibatis.annotations.Delete("DELETE FROM conversation_member WHERE user_id = #{userId}")
+    int deleteConversationMembersByUserId(@Param("userId") Long userId);
+
+    @org.apache.ibatis.annotations.Delete("DELETE FROM conversation_join_request WHERE applicant_user_id = #{userId} OR inviter_user_id = #{userId}")
+    int deleteConversationJoinRequestsByUserId(@Param("userId") Long userId);
+
+    @Update("UPDATE wechat_user SET status = 0, username = CONCAT(username, '_已注销_', id), phone = NULL, email = NULL, wechat_no = CONCAT(wechat_no, '_del_', id), updated_at = NOW() WHERE id = #{userId}")
+    int softDeleteUser(@Param("userId") Long userId);
 }

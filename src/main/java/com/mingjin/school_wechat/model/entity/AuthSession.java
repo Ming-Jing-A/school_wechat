@@ -8,6 +8,7 @@ public class AuthSession {
     private Long userId;
     private Long deviceId;
     private String sessionToken;
+    private String username;
     private String nickname;
     private String avatarUrl;
 }

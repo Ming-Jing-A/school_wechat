@@ -11,4 +11,5 @@ public class LoginResponse {
     private String nickname;
     private String avatarUrl;
     private String wechatNo;
+    private String theme;
 }
