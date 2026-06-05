@@ -198,6 +198,60 @@ public class AdminController {
         return ApiResponse.success("已注销用户 " + target.getNickname());
     }
 
+    // ========== 登录限制管理 ==========
+
+    @GetMapping("/login-restriction")
+    public ApiResponse<Map<String, Object>> getLoginRestriction() {
+        ensureAdmin();
+        Map<String, Object> result = new LinkedHashMap<>();
+        try {
+            String mode = authMapper.getLoginRestrictionMode();
+            List<Map<String, Object>> allowedUsers = authMapper.findAllLoginAllowedUsers();
+            result.put("mode", mode != null ? mode : "open");
+            result.put("allowedUsers", allowedUsers);
+        } catch (Exception e) {
+            result.put("mode", "open");
+            result.put("allowedUsers", List.of());
+        }
+        return ApiResponse.success(result);
+    }
+
+    @PostMapping("/login-restriction/mode")
+    public ApiResponse<Map<String, Object>> setLoginRestrictionMode(@RequestBody Map<String, String> request) {
+        ensureAdmin();
+        String mode = request.getOrDefault("mode", "open");
+        if (!Set.of("open", "closed", "restricted").contains(mode)) {
+            throw new BusinessException("无效的模式，仅支持 open/closed/restricted");
+        }
+        authMapper.updateLoginRestrictionMode(mode);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("mode", mode);
+        return ApiResponse.success("登录限制模式已更新", result);
+    }
+
+    @PostMapping("/login-restriction/allowed-users")
+    public ApiResponse<Void> addLoginAllowedUser(@RequestBody Map<String, Long> request) {
+        ensureAdmin();
+        Long userId = request.get("userId");
+        if (userId == null) {
+            throw new BusinessException("用户ID不能为空");
+        }
+        WechatUser target = authMapper.findUserById(userId);
+        if (target == null) {
+            throw new BusinessException("用户不存在");
+        }
+        authMapper.addLoginAllowedUser(userId);
+        return ApiResponse.success("已添加到登录白名单", null);
+    }
+
+    @DeleteMapping("/login-restriction/allowed-users/{userId}")
+    public ApiResponse<Void> removeLoginAllowedUser(@PathVariable Long userId) {
+        ensureAdmin();
+        authMapper.removeLoginAllowedUser(userId);
+        return ApiResponse.success("已从登录白名单移除", null);
+    }
+
     private void ensureAdmin() {
         Long currentUserId = AuthContext.getUserId();
         if (currentUserId == null) {

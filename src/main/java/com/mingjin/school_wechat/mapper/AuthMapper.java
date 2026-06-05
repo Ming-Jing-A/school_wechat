@@ -35,7 +35,7 @@ public interface AuthMapper {
     @Select("""
             SELECT *
             FROM wechat_user
-            WHERE username = #{username}
+            WHERE BINARY username = #{username}
               AND status = 1
             LIMIT 1
             """)
@@ -52,8 +52,7 @@ public interface AuthMapper {
     @Select("""
             SELECT COUNT(1)
             FROM wechat_user
-            WHERE username = #{username}
-              AND status = 1
+            WHERE BINARY username = #{username}
             """)
     int countByUsername(@Param("username") String username);
 
@@ -61,7 +60,6 @@ public interface AuthMapper {
             SELECT COUNT(1)
             FROM wechat_user
             WHERE wechat_no = #{wechatNo}
-              AND status = 1
             """)
     int countByWechatNo(@Param("wechatNo") String wechatNo);
 
@@ -69,7 +67,6 @@ public interface AuthMapper {
             SELECT COUNT(1)
             FROM wechat_user
             WHERE phone = #{phone}
-              AND status = 1
             """)
     int countByPhone(@Param("phone") String phone);
 
@@ -77,7 +74,6 @@ public interface AuthMapper {
             SELECT COUNT(1)
             FROM wechat_user
             WHERE email = #{email}
-              AND status = 1
             """)
     int countByEmail(@Param("email") String email);
 
@@ -86,7 +82,6 @@ public interface AuthMapper {
             FROM wechat_user
             WHERE wechat_no = #{wechatNo}
               AND id <> #{userId}
-              AND status = 1
             """)
     int countByWechatNoExcludeUser(@Param("wechatNo") String wechatNo, @Param("userId") Long userId);
 
@@ -95,7 +90,6 @@ public interface AuthMapper {
             FROM wechat_user
             WHERE phone = #{phone}
               AND id <> #{userId}
-              AND status = 1
             """)
     int countByPhoneExcludeUser(@Param("phone") String phone, @Param("userId") Long userId);
 
@@ -104,7 +98,6 @@ public interface AuthMapper {
             FROM wechat_user
             WHERE email = #{email}
               AND id <> #{userId}
-              AND status = 1
             """)
     int countByEmailExcludeUser(@Param("email") String email, @Param("userId") Long userId);
 
@@ -322,6 +315,35 @@ public interface AuthMapper {
     @org.apache.ibatis.annotations.Delete("DELETE FROM conversation_join_request WHERE applicant_user_id = #{userId} OR inviter_user_id = #{userId}")
     int deleteConversationJoinRequestsByUserId(@Param("userId") Long userId);
 
-    @Update("UPDATE wechat_user SET status = 0, username = CONCAT(username, '_已注销_', id), phone = NULL, email = NULL, wechat_no = CONCAT(wechat_no, '_del_', id), updated_at = NOW() WHERE id = #{userId}")
+    @Update("UPDATE wechat_user SET status = 0, updated_at = NOW() WHERE id = #{userId}")
     int softDeleteUser(@Param("userId") Long userId);
+
+    // ========== 登录限制相关 ==========
+
+    @Select("SELECT mode FROM login_restriction_config ORDER BY id LIMIT 1")
+    String getLoginRestrictionMode();
+
+    @Update("UPDATE login_restriction_config SET mode = #{mode}, updated_at = NOW() ORDER BY id LIMIT 1")
+    int updateLoginRestrictionMode(@Param("mode") String mode);
+
+    @Select("SELECT COUNT(1) FROM login_allowed_user WHERE user_id = #{userId}")
+    int isUserInLoginAllowedList(@Param("userId") Long userId);
+
+    @Insert("INSERT IGNORE INTO login_allowed_user (user_id) VALUES (#{userId})")
+    int addLoginAllowedUser(@Param("userId") Long userId);
+
+    @org.apache.ibatis.annotations.Delete("DELETE FROM login_allowed_user WHERE user_id = #{userId}")
+    int removeLoginAllowedUser(@Param("userId") Long userId);
+
+    @Select("""
+            SELECT la.user_id, u.username, u.nickname, u.avatar_url
+            FROM login_allowed_user la
+            JOIN wechat_user u ON u.id = la.user_id
+            WHERE u.status = 1
+            ORDER BY la.created_at
+            """)
+    List<Map<String, Object>> findAllLoginAllowedUsers();
+
+    @org.apache.ibatis.annotations.Delete("DELETE FROM login_allowed_user")
+    int clearLoginAllowedUsers();
 }

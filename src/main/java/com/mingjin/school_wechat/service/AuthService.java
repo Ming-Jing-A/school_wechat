@@ -27,6 +27,7 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 @Service
@@ -58,6 +59,7 @@ public class AuthService {
         if (!PasswordUtils.matches(request.getPassword(), user.getPasswordHash())) {
             throw new BusinessException("用户名或密码错误");
         }
+        checkLoginRestriction(user);
         LoginResponse response = createLoginSession(user, request.getDeviceName(), request.getBrowserName(), request.getOsName(), ipAddress);
         authMapper.updateUserOnline(user.getId());
         return response;
@@ -82,6 +84,7 @@ public class AuthService {
         user.setStatus(1);
         user.setLastOnlineAt(LocalDateTime.now());
         authMapper.insertWechatUser(user);
+        checkLoginRestriction(user);
         LoginResponse response = createLoginSession(user, "默认网页端", "Browser", "Unknown OS", ipAddress);
         authMapper.updateUserOnline(user.getId());
         return response;
@@ -374,5 +377,37 @@ public class AuthService {
                 task.run();
             }
         });
+    }
+
+    private static final Set<String> ADMIN_USERNAMES = Set.of("zxh", "mingjin");
+
+    private void checkLoginRestriction(WechatUser user) {
+        // 管理员始终可以登录，不受限制
+        if (ADMIN_USERNAMES.contains(user.getUsername())) {
+            return;
+        }
+        try {
+            String mode = authMapper.getLoginRestrictionMode();
+            if (mode == null) {
+                return;
+            }
+            switch (mode) {
+                case "open":
+                    return;
+                case "closed":
+                    throw new BusinessException("当前网站已关闭登录，请联系管理员");
+                case "restricted":
+                    if (authMapper.isUserInLoginAllowedList(user.getId()) == 0) {
+                        throw new BusinessException("您不在允许登录的用户名单中，请联系管理员");
+                    }
+                    break;
+                default:
+                    break;
+            }
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            // 表可能尚未创建，默认放行
+        }
     }
 }

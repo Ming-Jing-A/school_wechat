@@ -2,7 +2,10 @@ package com.mingjin.school_wechat.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.mingjin.school_wechat.common.auth.AuthContext;
 import com.mingjin.school_wechat.common.exception.BusinessException;
+import com.mingjin.school_wechat.mapper.AiUserConfigMapper;
+import com.mingjin.school_wechat.model.entity.AiUserConfig;
 import com.mingjin.school_wechat.model.request.AiChatRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,9 +29,27 @@ public class AiService {
     private static final Logger log = LoggerFactory.getLogger(AiService.class);
 
     private final ObjectMapper objectMapper;
+    private final AiUserConfigMapper aiUserConfigMapper;
 
-    public AiService(ObjectMapper objectMapper) {
+    public AiService(ObjectMapper objectMapper, AiUserConfigMapper aiUserConfigMapper) {
         this.objectMapper = objectMapper;
+        this.aiUserConfigMapper = aiUserConfigMapper;
+    }
+
+    public AiUserConfig getUserConfig() {
+        Long userId = AuthContext.getUserId();
+        if (userId == null) {
+            throw new BusinessException("用户未登录");
+        }
+        return aiUserConfigMapper.findByUserId(userId);
+    }
+
+    public void saveUserConfig(String apiKey, String baseUrl, String model) {
+        Long userId = AuthContext.getUserId();
+        if (userId == null) {
+            throw new BusinessException("用户未登录");
+        }
+        aiUserConfigMapper.upsert(userId, apiKey, baseUrl, model);
     }
 
     public SseEmitter streamChat(AiChatRequest request) {
