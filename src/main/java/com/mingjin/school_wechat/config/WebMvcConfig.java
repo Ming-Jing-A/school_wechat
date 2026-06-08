@@ -37,6 +37,8 @@ public class WebMvcConfig implements WebMvcConfigurer {
                         "/api/browser/bilibili-stream",
                         "/api/browser/bilibili-video-stream",
                         "/api/browser/stream",
+                        "/api/browser/m3u8-proxy",
+                        "/api/browser/yinghua-video-src",
                         "/api/browser/empty",
                         "/api/browser/ws-proxy"
                 );

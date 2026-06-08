@@ -8,6 +8,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -747,6 +748,162 @@ public class BrowserProxyController {
                 + "<body><p>" + escapeHtml(message) + "</p></body></html>";
     }
 
+    /**
+     * 专用m3u8代理端点：获取m3u8内容，重写.ts URL为stream代理URL，返回修改后的m3u8
+     */
+    @GetMapping("/m3u8-proxy")
+    public void m3u8Proxy(@RequestParam String url, HttpServletResponse servletResponse) {
+        try {
+            log.info("[M3U8-Proxy] Fetching m3u8: {}", url);
+            java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
+                    .uri(safeCreateUri(url))
+                    .timeout(Duration.ofSeconds(30))
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("Referer", "http://www.yinghuajinju.com/")
+                    .GET()
+                    .build();
+            java.net.http.HttpResponse<String> resp = httpClient.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
+            String m3u8Content = resp.body();
+            log.info("[M3U8-Proxy] Fetched m3u8, status={}, len={}", resp.statusCode(), m3u8Content.length());
+
+            // 重写m3u8中的URL
+            String rewritten = rewriteM3u8Content(m3u8Content, url);
+            log.info("[M3U8-Proxy] Rewritten m3u8 len={}", rewritten.length());
+
+            servletResponse.setStatus(200);
+            servletResponse.setContentType("application/vnd.apple.mpegurl");
+            servletResponse.setCharacterEncoding("UTF-8");
+            servletResponse.addHeader("Access-Control-Allow-Origin", "*");
+            servletResponse.addHeader("Access-Control-Allow-Credentials", "true");
+            servletResponse.addHeader("Cache-Control", "no-cache");
+            servletResponse.getWriter().write(rewritten);
+        } catch (Exception e) {
+            log.error("[M3U8-Proxy] Error: {}", e.getMessage());
+            try {
+                servletResponse.setStatus(500);
+                servletResponse.setContentType("text/plain");
+                servletResponse.getWriter().write("M3U8 proxy error: " + e.getMessage());
+            } catch (Exception ignored) {}
+        }
+    }
+
+    @GetMapping("/yinghua-video-src")
+    public ResponseEntity<Map<String, Object>> yinghuaVideoSrc(@RequestParam String url) {
+        try {
+            log.info("[YinghuaVideoSrc] Fetching video source for: {}", url);
+            // 获取视频页面HTML
+            java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder()
+                    .uri(safeCreateUri(url))
+                    .timeout(Duration.ofSeconds(30))
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    .GET()
+                    .build();
+            java.net.http.HttpResponse<String> resp = httpClient.send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
+            String html = resp.body();
+            log.info("[YinghuaVideoSrc] Fetched page, status={}, len={}", resp.statusCode(), html.length());
+
+            // 提取视频源URL
+            String videoSrcUrl = null;
+
+            // 模式A: data-vid属性
+            java.util.regex.Matcher dataVidMatcher = java.util.regex.Pattern.compile(
+                    "data-vid=[\"']([^\"']+)[\"']", java.util.regex.Pattern.CASE_INSENSITIVE
+            ).matcher(html);
+            if (dataVidMatcher.find()) {
+                videoSrcUrl = dataVidMatcher.group(1).replaceAll("\\$mp4$", "");
+                log.info("[YinghuaVideoSrc] Found video URL via data-vid: {}", videoSrcUrl);
+            }
+
+            // 模式B: changeplay() 函数调用
+            if (videoSrcUrl == null) {
+                java.util.regex.Matcher changeplayMatcher = java.util.regex.Pattern.compile(
+                        "changeplay\\(['\"]([^'\"]+)['\"]\\)", java.util.regex.Pattern.CASE_INSENSITIVE
+                ).matcher(html);
+                if (changeplayMatcher.find()) {
+                    videoSrcUrl = changeplayMatcher.group(1).replaceAll("\\$mp4$", "");
+                    log.info("[YinghuaVideoSrc] Found video URL via changeplay: {}", videoSrcUrl);
+                }
+            }
+
+            if (videoSrcUrl == null) {
+                log.warn("[YinghuaVideoSrc] No video source found for: {}", url);
+                return ResponseEntity.ok(Map.of("success", false, "message", "未找到视频源"));
+            }
+
+            // 构建代理视频URL
+            String proxiedVideoUrl;
+            if (videoSrcUrl.toLowerCase().contains(".m3u8")) {
+                proxiedVideoUrl = "/api/browser/m3u8-proxy?url=" + encodeURIComponent(videoSrcUrl);
+            } else {
+                proxiedVideoUrl = "/api/browser/stream?url=" + encodeURIComponent(videoSrcUrl);
+            }
+
+            // 提取标题
+            String title = "樱花动漫";
+            java.util.regex.Matcher titleMatcher = java.util.regex.Pattern.compile(
+                    "<title[^>]*>([^<]+)</title>", java.util.regex.Pattern.CASE_INSENSITIVE
+            ).matcher(html);
+            if (titleMatcher.find()) {
+                title = titleMatcher.group(1).trim();
+            }
+
+            return ResponseEntity.ok(Map.of(
+                    "success", true,
+                    "videoUrl", proxiedVideoUrl,
+                    "title", title,
+                    "isHls", videoSrcUrl.toLowerCase().contains(".m3u8")
+            ));
+        } catch (Exception e) {
+            log.error("[YinghuaVideoSrc] Error: {}", e.getMessage(), e);
+            return ResponseEntity.ok(Map.of("success", false, "message", "获取视频源失败: " + e.getMessage()));
+        }
+    }
+
+    private String rewriteM3u8Content(String m3u8Content, String m3u8Url) {
+        StringBuilder result = new StringBuilder();
+        String[] lines = m3u8Content.split("\n");
+        try {
+            java.net.URL baseUrl = new URL(m3u8Url);
+            for (String line : lines) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                    // 处理 #EXT-X-KEY 中的 URI 属性
+                    if (trimmed.contains("URI=")) {
+                        java.util.regex.Matcher uriMatcher = java.util.regex.Pattern.compile("URI=\"([^\"]+)\"").matcher(line);
+                        StringBuffer sb = new StringBuffer();
+                        while (uriMatcher.find()) {
+                            String keyUrl = uriMatcher.group(1);
+                            try {
+                                keyUrl = new URL(baseUrl, keyUrl).toString();
+                            } catch (Exception e) { /* already absolute */ }
+                            uriMatcher.appendReplacement(sb, "URI=\"/api/browser/stream?url=" + encodeURIComponent(keyUrl) + "\"");
+                        }
+                        uriMatcher.appendTail(sb);
+                        line = sb.toString();
+                    }
+                    result.append(line).append("\n");
+                } else {
+                    // 这是一个URL行（.ts分片或子m3u8）
+                    try {
+                        String absoluteUrl = new URL(baseUrl, trimmed).toString();
+                        if (absoluteUrl.toLowerCase().contains(".m3u8")) {
+                            result.append("/api/browser/m3u8-proxy?url=").append(encodeURIComponent(absoluteUrl)).append("\n");
+                        } else {
+                            result.append("/api/browser/stream?url=").append(encodeURIComponent(absoluteUrl)).append("\n");
+                        }
+                    } catch (Exception e) {
+                        result.append(line).append("\n");
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("[M3U8-Proxy] Failed to rewrite m3u8, returning original: {}", e.getMessage());
+            return m3u8Content;
+        }
+        return result.toString();
+    }
+
     @RequestMapping(value = "/stream", method = {RequestMethod.GET, RequestMethod.HEAD})
     public void streamProxy(
             @RequestParam String url,
@@ -754,8 +911,12 @@ public class BrowserProxyController {
             HttpServletResponse servletResponse) {
         try {
             boolean streamIsIqiyi = isIqiyiUrl(url);
+            boolean streamIsYinghua = isYinghuaUrl(url);
             if (streamIsIqiyi) {
                 log.info("Iqiyi stream proxy: method={}, range={}", servletRequest.getMethod(), servletRequest.getHeader("Range"));
+            }
+            if (streamIsYinghua) {
+                log.info("[M3U8/TS] Stream proxy for yinghua CDN: url={}", url);
             }
             
             java.net.http.HttpRequest.Builder reqBuilder = java.net.http.HttpRequest.newBuilder()
@@ -771,6 +932,9 @@ public class BrowserProxyController {
             } else if (streamIsIqiyi) {
                 referer = "https://www.iqiyi.com/";
                 origin = "https://www.iqiyi.com";
+            } else if (streamIsYinghua) {
+                referer = "http://www.yinghuajinju.com/";
+                origin = "http://www.yinghuajinju.com";
             } else {
                 referer = extractReferer(url);
                 origin = extractOrigin(url);
@@ -1219,6 +1383,7 @@ public class BrowserProxyController {
             boolean isBing = isBingUrl(url);
             boolean isIqiyi = isIqiyiUrl(url);
             boolean isYinghua = isYinghuaUrl(url);
+            boolean skipFurtherProcessing = false;
             if (isIqiyi) {
                 boolean isVs = isVideoStreamUrl(url);
                 log.info("Iqiyi proxy: {} {}, ct={}, range={}, isVideoStream={}", method, url,
@@ -1686,7 +1851,8 @@ public class BrowserProxyController {
                 }
             }
 
-            boolean isVideoStreamPassthrough = isVideoStreamUrl(url);
+            boolean isVideoStreamPassthrough = isVideoStreamUrl(url) && !isM3u8Content(
+                    response.headers().firstValue("Content-Type").orElse(""), url);
             if (isVideoStreamPassthrough) {
                 if (isIqiyi) {
                     String vCt = response.headers().firstValue("Content-Type").orElse("");
@@ -1768,6 +1934,11 @@ public class BrowserProxyController {
                         body = html.getBytes(StandardCharsets.UTF_8);
                         bodyModified = true;
                     } else {
+                        // 樱花动漫：视频页面在HTML被修改前提取视频源，用自定义播放器播放
+                        String yinghuaOriginalHtml = null;
+                        if (isYinghua && isYinghuaVideoPageUrl(url)) {
+                            yinghuaOriginalHtml = html; // 保存原始HTML用于提取iframe
+                        }
                         if (isBilibiliSearchUrl(url)) {
                             html = stripPageScripts(html);
                         }
@@ -1777,12 +1948,25 @@ public class BrowserProxyController {
                         if (isIqiyi && isIqiyiVideoPageUrl(url)) {
                             html = injectIqiyiPlayerHelper(html);
                         }
-                        // 樱花动漫视频页面注入播放辅助脚本
-                        if (isYinghua && isYinghuaVideoPageUrl(url)) {
-                            html = injectYinghuaPlayerHelper(html);
+                        // 樱花动漫：用原始HTML提取视频源，返回自定义播放器
+                        if (yinghuaOriginalHtml != null) {
+                            try {
+                                String customPlayerHtml = buildYinghuaCustomPlayer(yinghuaOriginalHtml, url, proxyBaseUrl);
+                                if (customPlayerHtml != null) {
+                                    body = customPlayerHtml.getBytes(StandardCharsets.UTF_8);
+                                    bodyModified = true;
+                                    respContentType = "text/html;charset=UTF-8";
+                                    log.info("[Yinghua] Replaced video page with custom player for url={}", url);
+                                    skipFurtherProcessing = true;
+                                }
+                            } catch (Exception e) {
+                                log.warn("[Yinghua] Failed to build custom player, falling back to proxy: {}", e.getMessage());
+                            }
                         }
-                        body = html.getBytes(StandardCharsets.UTF_8);
-                        bodyModified = true;
+                        if (!skipFurtherProcessing) {
+                            body = html.getBytes(StandardCharsets.UTF_8);
+                            bodyModified = true;
+                        }
                     }
                 }
             } else if (respContentType.contains("text/css")) {
@@ -1790,6 +1974,14 @@ public class BrowserProxyController {
                 css = rewriteCssUrls(css, url, proxyBaseUrl);
                 body = css.getBytes(StandardCharsets.UTF_8);
                 bodyModified = true;
+            } else if (isM3u8Content(respContentType, url)) {
+                // m3u8 文件：重写其中的 URL（相对路径转绝对路径再转代理URL）
+                String m3u8 = new String(body, StandardCharsets.UTF_8);
+                m3u8 = rewriteM3u8Urls(m3u8, url, proxyBaseUrl);
+                body = m3u8.getBytes(StandardCharsets.UTF_8);
+                respContentType = "application/vnd.apple.mpegurl";
+                bodyModified = true;
+                log.info("[M3U8] Rewritten m3u8 content for url={}, bodyLen={}", url, body.length);
             } else if (shouldRewriteTextBody(respContentType, isBilibili, isBing, isDoubao, isQwen, isYuanbao)) {
                 String text = new String(body, resolveCharset(respContentType, body));
                 text = rewriteTextBodyUrls(text, url, proxyBaseUrl);
@@ -1935,6 +2127,10 @@ public class BrowserProxyController {
 
     private String buildProxyUrl(String targetUrl, String proxyBaseUrl) {
         if (isVideoStreamUrl(targetUrl)) {
+            // m3u8 文件需要走 proxy 端点做 URL 重写，不能走 stream 端点
+            if (targetUrl.toLowerCase().contains(".m3u8")) {
+                return "/api/browser/proxy?url=" + encodeURIComponent(targetUrl);
+            }
             return "/api/browser/stream?url=" + encodeURIComponent(targetUrl);
         }
         return "/api/browser/proxy?url=" + encodeURIComponent(targetUrl);
@@ -3167,7 +3363,13 @@ public class BrowserProxyController {
                     || lower.endsWith(".yh5dm.cc")
                     || lower.endsWith(".jocy.tv")
                     || lower.endsWith(".605-zy.com")
-                    || lower.endsWith(".cdn605.com");
+                    || lower.endsWith(".cdn605.com")
+                    || lower.endsWith(".bazhuayu.com")
+                    || lower.endsWith(".sdplay.com")
+                    || lower.endsWith(".baofeng10.com")
+                    || lower.endsWith(".baofeng.com")
+                    || lower.endsWith(".fengbao9.com")
+                    || lower.endsWith(".fengbao.com");
         } catch (Exception e) {
             return false;
         }
@@ -3184,7 +3386,7 @@ public class BrowserProxyController {
                     && !lowerHost.endsWith(".imomoe.la")
                     && !lowerHost.endsWith(".imomoe.io")) return false;
             String path = URI.create(url).getPath().toLowerCase();
-            return path.contains("/play") || path.contains("/view") || path.contains("/video");
+            return path.contains("/v/") || path.contains("/play") || path.contains("/view") || path.contains("/video");
         } catch (Exception e) {
             return false;
         }
@@ -3384,6 +3586,10 @@ public class BrowserProxyController {
                 if (lowerHost.endsWith(".cdn605.com")) return true;
                 if (lowerHost.endsWith(".bazhuayu.com")) return true;
                 if (lowerHost.endsWith(".sdplay.com")) return true;
+                if (lowerHost.endsWith(".baofeng10.com")) return true;
+                if (lowerHost.endsWith(".baofeng.com")) return true;
+                if (lowerHost.endsWith(".fengbao9.com")) return true;
+                if (lowerHost.endsWith(".fengbao.com")) return true;
             }
         } catch (Exception ignored) {}
         String lower = url.toLowerCase();
@@ -3409,7 +3615,88 @@ public class BrowserProxyController {
                 + "try{_oUrl=new URL(_yhOrigUrl);}catch(e){_oUrl=new URL('http://www.yinghuajinju.com/');}"
                 + "var _oHostname=_oUrl.hostname;"
                 + "var _oOrigin=_oUrl.origin;"
-                // 2. 创建虚拟location对象
+                // 2. URL代理函数：将原始URL转为代理URL
+                + "var _toProxy=function(u){"
+                + "if(!u||typeof u!=='string')return u;"
+                + "if(u.indexOf('/api/browser/')===0)return u;"
+                + "if(u.indexOf('blob:')===0||u.indexOf('data:')===0||u.indexOf('javascript:')===0)return u;"
+                + "try{"
+                + "var absUrl=new URL(u,_yhOrigUrl).toString();"
+                + "return '/api/browser/proxy?url='+encodeURIComponent(absUrl);"
+                + "}catch(e){return u;}"
+                + "};"
+                // 3. 拦截fetch请求
+                + "try{"
+                + "var _origFetch=window.fetch;"
+                + "window.fetch=function(input,init){"
+                + "var url=input;"
+                + "if(input instanceof Request){url=input.url;}"
+                + "if(typeof url==='string'&&url.length>0){"
+                + "var proxied=_toProxy(url);"
+                + "if(proxied!==url){"
+                + "console.log('[YinghuaHelper] fetch proxy: '+url+' -> '+proxied);"
+                + "if(input instanceof Request){"
+                + "init=init||{};"
+                + "init.method=input.method;"
+                + "init.headers=input.headers;"
+                + "init.body=input.body;"
+                + "init.mode=input.mode;"
+                + "init.credentials=input.credentials;"
+                + "init.cache=input.cache;"
+                + "init.redirect=input.redirect;"
+                + "init.referrer=input.referrer;"
+                + "init.integrity=input.integrity;"
+                + "input=proxied;"
+                + "}else{input=proxied;}"
+                + "}"
+                + "}"
+                + "return _origFetch.call(window,input,init);"
+                + "};"
+                + "}catch(e){console.error('[YinghuaHelper] fetch intercept failed',e);}"
+                // 4. 拦截XMLHttpRequest
+                + "try{"
+                + "var _origOpen=XMLHttpRequest.prototype.open;"
+                + "XMLHttpRequest.prototype.open=function(method,url,async,user,pass){"
+                + "if(typeof url==='string'&&url.length>0){"
+                + "var proxied=_toProxy(url);"
+                + "if(proxied!==url){"
+                + "console.log('[YinghuaHelper] XHR proxy: '+url+' -> '+proxied);"
+                + "url=proxied;"
+                + "}"
+                + "}"
+                + "return _origOpen.call(this,method,url,async!==false,user,pass);"
+                + "};"
+                + "}catch(e){console.error('[YinghuaHelper] XHR intercept failed',e);}"
+                // 5. 拦截video/source的src属性设置
+                + "try{"
+                + "var _origSrcDesc=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'src')||{};"
+                + "if(_origSrcDesc.set){"
+                + "Object.defineProperty(HTMLMediaElement.prototype,'src',{"
+                + "set:function(v){"
+                + "var proxied=_toProxy(v);"
+                + "if(proxied!==v){console.log('[YinghuaHelper] media.src proxy: '+v+' -> '+proxied);}"
+                + "return _origSrcDesc.set.call(this,proxied);"
+                + "},"
+                + "get:_origSrcDesc.get,"
+                + "configurable:true"
+                + "});"
+                + "}"
+                + "}catch(e){console.error('[YinghuaHelper] media.src intercept failed',e);}"
+                // 6. 拦截source标签的src属性
+                + "try{"
+                + "var _origSetAttr=Element.prototype.setAttribute;"
+                + "Element.prototype.setAttribute=function(name,value){"
+                + "if((name==='src'||name==='data-src')&&typeof value==='string'&&value.length>0){"
+                + "var tag=this.tagName&&this.tagName.toLowerCase();"
+                + "if(tag==='source'||tag==='video'||tag==='audio'||tag==='iframe'){"
+                + "var proxied=_toProxy(value);"
+                + "if(proxied!==value){console.log('[YinghuaHelper] setAttribute('+name+') proxy: '+value+' -> '+proxied);value=proxied;}"
+                + "}"
+                + "}"
+                + "return _origSetAttr.call(this,name,value);"
+                + "};"
+                + "}catch(e){console.error('[YinghuaHelper] setAttribute intercept failed',e);}"
+                // 7. 创建虚拟location对象
                 + "var _fakeLoc={};"
                 + "Object.defineProperties(_fakeLoc,{"
                 + "'href':{get:function(){return _yhOrigUrl;},set:function(){},enumerable:true},"
@@ -3427,27 +3714,27 @@ public class BrowserProxyController {
                 + "'reload':{value:function(){}},"
                 + "'toString':{value:function(){return _yhOrigUrl;}}"
                 + "});"
-                // 3. 强制覆盖window.location和document.location
+                // 8. 强制覆盖window.location和document.location
                 + "try{delete window.location;}catch(e){}"
                 + "try{Object.defineProperty(window,'location',{get:function(){return _fakeLoc;},set:function(){},configurable:true});}catch(e){}"
                 + "try{Object.defineProperty(document,'location',{get:function(){return _fakeLoc;},set:function(){},configurable:true});}catch(e){}"
-                // 4. 覆盖document.referrer
+                // 9. 覆盖document.referrer
                 + "try{Object.defineProperty(document,'referrer',{get:function(){return _oOrigin+'/';},configurable:true});}catch(e){}"
-                // 5. 覆盖document.URL和document.documentURI
+                // 10. 覆盖document.URL和document.documentURI
                 + "try{Object.defineProperty(document,'URL',{get:function(){return _yhOrigUrl;},configurable:true});}catch(e){}"
                 + "try{Object.defineProperty(document,'documentURI',{get:function(){return _yhOrigUrl;},configurable:true});}catch(e){}"
-                // 6. 禁用iframe检测
+                // 11. 禁用iframe检测
                 + "try{"
                 + "Object.defineProperty(window,'self',{get:function(){return window;},configurable:true});"
                 + "Object.defineProperty(window,'top',{get:function(){return window;},configurable:true});"
                 + "Object.defineProperty(window,'parent',{get:function(){return window;},configurable:true});"
                 + "Object.defineProperty(window,'frameElement',{get:function(){return null;},configurable:true});"
                 + "}catch(e){}"
-                // 7. 覆盖document.domain
+                // 12. 覆盖document.domain
                 + "try{"
                 + "Object.defineProperty(document,'domain',{get:function(){return _oHostname;},set:function(v){},configurable:true});"
                 + "}catch(e){}"
-                // 8. 覆盖Location.prototype属性
+                // 13. 覆盖Location.prototype属性
                 + "var _locProps=['hostname','origin','protocol','host','pathname','search','hash','port','href'];"
                 + "for(var i=0;i<_locProps.length;i++){"
                 + "(function(prop){"
@@ -3464,16 +3751,15 @@ public class BrowserProxyController {
                 + "}catch(e){}"
                 + "})(_locProps[i]);"
                 + "}"
-                // 9. 覆盖navigator属性
+                // 14. 覆盖navigator属性
                 + "try{Object.defineProperty(navigator,'webdriver',{get:function(){return false;},configurable:true});}catch(e){}"
                 + "try{Object.defineProperty(navigator,'languages',{get:function(){return['zh-CN','zh','en'];},configurable:true});}catch(e){}"
                 + "try{Object.defineProperty(navigator,'platform',{get:function(){return'Win32';},configurable:true});}catch(e){}"
-                // 10. 处理浏览器自动播放策略——先静音播放，再恢复音量
+                // 15. 处理浏览器自动播放策略——先静音播放，再恢复音量
                 + "try{"
                 + "var _origPlay=HTMLMediaElement.prototype.play;"
                 + "HTMLMediaElement.prototype.play=function(){"
                 + "var _el=this;"
-                + "var _wasMuted=_el.muted;"
                 + "if(!_el._yhAutoPlayTried){"
                 + "_el._yhAutoPlayTried=true;"
                 + "_el.muted=true;"
@@ -3491,7 +3777,7 @@ public class BrowserProxyController {
                 + "return _result;"
                 + "};"
                 + "}catch(e){}"
-                // 11. 监听用户首次交互后恢复音量
+                // 16. 监听用户首次交互后恢复音量
                 + "try{"
                 + "var _restoreVol=function(){"
                 + "var _vs=document.querySelectorAll('video');"
@@ -3506,7 +3792,7 @@ public class BrowserProxyController {
                 + "document.addEventListener('touchstart',_restoreVol,{once:true});"
                 + "document.addEventListener('keydown',_restoreVol,{once:true});"
                 + "}catch(e){}"
-                // 12. 确保iframe中的视频播放器能正常工作
+                // 17. 确保iframe中的视频播放器能正常工作
                 + "try{"
                 + "var _origPostMessage=window.postMessage.bind(window);"
                 + "window.postMessage=function(msg,origin){"
@@ -3514,28 +3800,9 @@ public class BrowserProxyController {
                 + "_origPostMessage(msg,origin);"
                 + "};"
                 + "}catch(e){}"
-                // 13. 确保MediaSource可用
+                // 18. 确保MediaSource可用
                 + "try{"
                 + "if(!window.MediaSource&&window.WebKitMediaSource){window.MediaSource=window.WebKitMediaSource;}"
-                + "}catch(e){}"
-                // 14. 监听iframe加载，为嵌套iframe注入辅助
-                + "try{"
-                + "var _observer=new MutationObserver(function(mutations){"
-                + "mutations.forEach(function(m){"
-                + "m.addedNodes.forEach(function(node){"
-                + "if(node.tagName==='IFRAME'&&node.contentWindow){"
-                + "try{"
-                + "var _iframeDoc=node.contentDocument||node.contentWindow.document;"
-                + "if(_iframeDoc&&!_iframeDoc._yhHelperBound){"
-                + "_iframeDoc._yhHelperBound=true;"
-                + "try{Object.defineProperty(_iframeDoc,'referrer',{get:function(){return _oOrigin+'/';},configurable:true});}catch(e){}"
-                + "}"
-                + "}catch(e){}"
-                + "}"
-                + "});"
-                + "});"
-                + "});"
-                + "_observer.observe(document.body||document.documentElement,{childList:true,subtree:true});"
                 + "}catch(e){}"
                 + "console.log('[YinghuaHelper] injected, origUrl='+_yhOrigUrl+', hostname='+_oHostname);"
                 + "})();</script>";
@@ -3547,6 +3814,580 @@ public class BrowserProxyController {
             html = helperScript + html;
         }
         return html;
+    }
+
+    private String buildYinghuaCustomPlayer(String videoPageHtml, String videoPageUrl, String proxyBaseUrl) {
+        try {
+            String videoSrcUrl = null;
+
+            // 模式A: data-vid属性（樱花动漫主要方式）
+            // <div data-vid="https://v10.baofeng10.com/video/xxx/index.m3u8$mp4" id="playbox">
+            java.util.regex.Matcher dataVidMatcher = java.util.regex.Pattern.compile(
+                    "data-vid=[\"']([^\"']+)[\"']", java.util.regex.Pattern.CASE_INSENSITIVE
+            ).matcher(videoPageHtml);
+            if (dataVidMatcher.find()) {
+                videoSrcUrl = dataVidMatcher.group(1).replaceAll("\\$mp4$", "");
+                log.info("[YinghuaPlayer] Found video URL via data-vid: {}", videoSrcUrl);
+            }
+
+            // 模式B: changeplay('xxx') 函数调用
+            if (videoSrcUrl == null) {
+                java.util.regex.Matcher changeplayMatcher = java.util.regex.Pattern.compile(
+                        "changeplay\\(['\"]([^'\"]+)['\"]\\)", java.util.regex.Pattern.CASE_INSENSITIVE
+                ).matcher(videoPageHtml);
+                if (changeplayMatcher.find()) {
+                    videoSrcUrl = changeplayMatcher.group(1).replaceAll("\\$mp4$", "");
+                    log.info("[YinghuaPlayer] Found video URL via changeplay: {}", videoSrcUrl);
+                }
+            }
+
+            // 模式C: iframe URL（旧版页面可能使用）
+            if (videoSrcUrl == null) {
+                String iframeUrl = null;
+                java.util.regex.Matcher iframeMatcher = java.util.regex.Pattern.compile(
+                        "<iframe[^>]+src=[\"']([^\"']+)[\"'][^>]*>", java.util.regex.Pattern.CASE_INSENSITIVE
+                ).matcher(videoPageHtml);
+                while (iframeMatcher.find()) {
+                    String src = iframeMatcher.group(1);
+                    if (src != null && !src.isEmpty() && !src.startsWith("#")) {
+                        iframeUrl = src;
+                        break;
+                    }
+                }
+                if (iframeUrl != null) {
+                    try {
+                        iframeUrl = new URL(new URL(videoPageUrl), iframeUrl).toString();
+                    } catch (Exception e) {
+                        log.warn("[YinghuaPlayer] Failed to resolve iframe URL: {}", iframeUrl);
+                        iframeUrl = null;
+                    }
+                }
+                if (iframeUrl != null) {
+                    log.info("[YinghuaPlayer] Found player iframe: {}", iframeUrl);
+                    // 检查iframe URL的vid参数中是否直接包含m3u8/mp4 URL
+                    try {
+                        java.net.URI iframeUri = java.net.URI.create(iframeUrl);
+                        String query = iframeUri.getQuery();
+                        if (query != null && query.contains("vid=")) {
+                            java.util.regex.Matcher vidMatcher = java.util.regex.Pattern.compile("vid=([^&]+)").matcher(query);
+                            if (vidMatcher.find()) {
+                                String vidValue = java.net.URLDecoder.decode(vidMatcher.group(1), "UTF-8");
+                                if (vidValue.contains(".m3u8") || vidValue.contains(".mp4")) {
+                                    videoSrcUrl = vidValue.replaceAll("\\$mp4$", "");
+                                    log.info("[YinghuaPlayer] Found video URL from vid param: {}", videoSrcUrl);
+                                }
+                            }
+                        }
+                    } catch (Exception e) {
+                        log.debug("[YinghuaPlayer] Failed to parse vid param: {}", e.getMessage());
+                    }
+                    // 如果vid参数中没有，请求iframe页面提取
+                    if (videoSrcUrl == null) {
+                        videoSrcUrl = extractVideoUrlFromIframe(iframeUrl, videoPageUrl);
+                    }
+                }
+            }
+
+            if (videoSrcUrl == null) {
+                log.warn("[YinghuaPlayer] No video source URL found in video page: {}", videoPageUrl);
+                return null;
+            }
+
+            log.info("[YinghuaPlayer] Final video source URL: {}", videoSrcUrl);
+
+            // 构建视频源URL的代理URL
+            String proxiedVideoUrl;
+            if (videoSrcUrl.toLowerCase().contains(".m3u8")) {
+                proxiedVideoUrl = "/api/browser/m3u8-proxy?url=" + encodeURIComponent(videoSrcUrl);
+            } else {
+                proxiedVideoUrl = "/api/browser/stream?url=" + encodeURIComponent(videoSrcUrl);
+            }
+
+            // 从原始页面提取标题
+            String title = "樱花动漫";
+            java.util.regex.Matcher titleMatcher = java.util.regex.Pattern.compile(
+                    "<title[^>]*>([^<]+)</title>", java.util.regex.Pattern.CASE_INSENSITIVE
+            ).matcher(videoPageHtml);
+            if (titleMatcher.find()) {
+                title = titleMatcher.group(1).trim();
+            }
+
+            // 从原始页面提取选集列表
+            String episodeListHtml = extractEpisodeList(videoPageHtml, videoPageUrl);
+
+            return buildCustomHlsPlayerHtml(title, proxiedVideoUrl, videoSrcUrl.toLowerCase().contains(".m3u8"), episodeListHtml);
+        } catch (Exception e) {
+            log.error("[YinghuaPlayer] Error building custom player: {}", e.getMessage(), e);
+            return null;
+        }
+    }
+
+    private String extractVideoUrlFromIframe(String iframeUrl, String refererUrl) {
+        try {
+            java.net.http.HttpRequest playerReq = java.net.http.HttpRequest.newBuilder()
+                    .uri(safeCreateUri(iframeUrl))
+                    .timeout(Duration.ofSeconds(30))
+                    .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+                    .header("Referer", refererUrl)
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    .GET()
+                    .build();
+            java.net.http.HttpResponse<String> playerResp = httpClient.send(playerReq, java.net.http.HttpResponse.BodyHandlers.ofString());
+            String playerHtml = playerResp.body();
+            log.info("[YinghuaPlayer] Player page fetched, status={}, bodyLen={}", playerResp.statusCode(), playerHtml.length());
+
+            // 检查嵌套iframe
+            java.util.regex.Matcher nestedIframeMatcher = java.util.regex.Pattern.compile(
+                    "<iframe[^>]+src=[\"']([^\"']+)[\"'][^>]*>", java.util.regex.Pattern.CASE_INSENSITIVE
+            ).matcher(playerHtml);
+            while (nestedIframeMatcher.find()) {
+                String src = nestedIframeMatcher.group(1);
+                if (src != null && !src.isEmpty()) {
+                    try {
+                        String nestedUrl = new URL(new URL(iframeUrl), src).toString();
+                        log.info("[YinghuaPlayer] Found nested iframe: {}", nestedUrl);
+                        java.net.http.HttpRequest nestedReq = java.net.http.HttpRequest.newBuilder()
+                                .uri(safeCreateUri(nestedUrl))
+                                .timeout(Duration.ofSeconds(30))
+                                .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+                                .header("Referer", iframeUrl)
+                                .GET()
+                                .build();
+                        java.net.http.HttpResponse<String> nestedResp = httpClient.send(nestedReq, java.net.http.HttpResponse.BodyHandlers.ofString());
+                        playerHtml = nestedResp.body();
+                        iframeUrl = nestedUrl;
+                        log.info("[YinghuaPlayer] Nested iframe fetched, bodyLen={}", playerHtml.length());
+                    } catch (Exception e) {
+                        log.debug("[YinghuaPlayer] Failed to fetch nested iframe: {}", e.getMessage());
+                    }
+                    break;
+                }
+            }
+
+            // 从HTML中提取视频URL
+            String[][] patterns = {
+                    {"var pattern", "var\\s+\\w+\\s*=\\s*[\"']([^\"']*(?:\\.m3u8|\\.mp4)[^\"']*)[\"']"},
+                    {"DPlayer config", "url\\s*:\\s*[\"']([^\"']*(?:\\.m3u8|\\.mp4)[^\"']*)[\"']"},
+                    {"video/source tag", "<(?:video|source)[^>]+src=[\"']([^\"']+)[\"']"},
+                    {"file config", "file\\s*:\\s*[\"']([^\"']*(?:\\.m3u8|\\.mp4|video|stream)[^\"']*)[\"']"},
+                    {"m3u8 URL", "(https?://[^\"'\\s<>]+\\.m3u8[^\"'\\s<>]*)"},
+                    {"mp4 URL", "(https?://[^\"'\\s<>]+\\.mp4[^\"'\\s<>]*)"},
+            };
+            for (String[] p : patterns) {
+                java.util.regex.Matcher m = java.util.regex.Pattern.compile(p[1], java.util.regex.Pattern.CASE_INSENSITIVE).matcher(playerHtml);
+                if (m.find()) {
+                    String url = m.group(1);
+                    try {
+                        url = new URL(new URL(iframeUrl), url).toString();
+                    } catch (Exception e) { /* already absolute */ }
+                    log.info("[YinghuaPlayer] Found video URL via {}: {}", p[0], url);
+                    return url;
+                }
+            }
+            log.warn("[YinghuaPlayer] No video URL found in iframe page. Preview: {}",
+                    playerHtml.substring(0, Math.min(playerHtml.length(), 2000)));
+        } catch (Exception e) {
+            log.warn("[YinghuaPlayer] Error extracting video URL from iframe: {}", e.getMessage());
+        }
+        return null;
+    }
+
+    private String buildCustomHlsPlayerHtml(String title, String proxiedVideoUrl, boolean isHls, String episodeListHtml) {
+        boolean hasEpisodes = episodeListHtml != null && !episodeListHtml.isEmpty();
+        // 将 <a> 链接转换为 <div> 选集项（参考B站样式）
+        String episodeItems = "";
+        if (hasEpisodes) {
+            // 解析选集链接，转换为div列表
+            java.util.regex.Matcher aMatcher = java.util.regex.Pattern.compile(
+                    "<a[^>]+data-url=['\"]([^'\"]+)['\"][^>]*>([^<]+)</a>", java.util.regex.Pattern.CASE_INSENSITIVE
+            ).matcher(episodeListHtml);
+            StringBuilder items = new StringBuilder();
+            while (aMatcher.find()) {
+                String dataUrl = aMatcher.group(1);
+                String text = aMatcher.group(2).trim();
+                items.append("<div class='ep-item' data-url='").append(escapeHtml(dataUrl)).append("' onclick='switchEp(this)'>")
+                     .append(escapeHtml(text)).append("</div>");
+            }
+            episodeItems = items.toString();
+        }
+
+        return "<!DOCTYPE html>\n"
+                + "<html><head><meta charset='UTF-8'>\n"
+                + "<meta name='viewport' content='width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no'>\n"
+                + "<title>" + escapeHtml(title) + "</title>\n"
+                + "<style>\n"
+                + ":root{--brand_pink:#FF6699;--bg1:#1a1a1a;--bg2:#222;--bg3:#2a2a2a;--text1:#eee;--text2:#aaa;--text3:#666;--line:#333;}\n"
+                + "*{margin:0;padding:0;box-sizing:border-box;}\n"
+                + "html,body{width:100%;height:100%;overflow:hidden;background:#000;color:#fff;font-family:-apple-system,BlinkMacSystemFont,Helvetica Neue,Helvetica,Arial,PingFang SC,Microsoft YaHei,sans-serif;}\n"
+                // 顶部标题栏
+                + ".header{display:flex;align-items:center;padding:10px 16px;background:#212121;gap:12px;height:44px;flex-shrink:0;}\n"
+                + ".header h1{font-size:15px;font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#eee;}\n"
+                + ".toggle-ep{background:none;border:1px solid var(--brand_pink);color:var(--brand_pink);padding:4px 12px;border-radius:4px;cursor:pointer;font-size:13px;flex-shrink:0;}\n"
+                + ".toggle-ep:hover{background:var(--brand_pink);color:#fff;}\n"
+                // 主体布局：左侧视频 + 右侧选集
+                + ".main{display:flex;height:calc(100vh - 44px);background:#000;}\n"
+                + ".video-area{flex:1;display:flex;justify-content:center;align-items:center;background:#000;position:relative;min-width:0;}\n"
+                + "video{max-width:100%;max-height:100%;width:100%;height:100%;object-fit:contain;}\n"
+                // 右侧选集侧边栏（参考B站样式）
+                + ".ep-sidebar{width:280px;background:var(--bg1);border-left:1px solid var(--line);flex-direction:column;flex-shrink:0;overflow:hidden;}\n"
+                + ".ep-sidebar.hidden{display:none;}\n"
+                + ".ep-sidebar.visible{display:flex;}\n"
+                + ".ep-header{padding:12px 16px;font-size:14px;font-weight:500;color:#eee;border-bottom:1px solid var(--line);flex-shrink:0;display:flex;align-items:center;justify-content:space-between;}\n"
+                + ".ep-count{font-size:12px;color:var(--text2);font-weight:400;}\n"
+                + ".ep-list{flex:1;overflow-y:auto;padding:4px 0;}\n"
+                + ".ep-list::-webkit-scrollbar{width:4px;}\n"
+                + ".ep-list::-webkit-scrollbar-thumb{background:#444;border-radius:2px;}\n"
+                + ".ep-item{padding:10px 16px;font-size:13px;color:var(--text2);cursor:pointer;transition:all .15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}\n"
+                + ".ep-item:hover{background:var(--bg3);color:#eee;}\n"
+                + ".ep-item.active{color:var(--brand_pink);background:#2a1a22;}\n"
+                + ".ep-item.active::before{content:'';display:inline-block;width:3px;height:14px;background:var(--brand_pink);border-radius:2px;margin-right:8px;vertical-align:middle;}\n"
+                // 加载和错误提示
+                + ".loading-overlay{position:absolute;top:0;left:0;width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,.7);z-index:10;opacity:0;pointer-events:none;transition:opacity .2s;}\n"
+                + ".loading-overlay.show{opacity:1;pointer-events:auto;}\n"
+                + ".spinner{width:36px;height:36px;border:3px solid #333;border-top-color:var(--brand_pink);border-radius:50%;animation:spin .8s linear infinite;}\n"
+                + "@keyframes spin{to{transform:rotate(360deg);}}\n"
+                + ".error-msg{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#ff6b6b;font-size:14px;display:none;z-index:10;text-align:center;}\n"
+                + ".retry-btn{margin-top:12px;padding:8px 24px;background:var(--brand_pink);color:#fff;border:none;border-radius:6px;cursor:pointer;font-size:14px;}\n"
+                + ".retry-btn:hover{background:#e85689;}\n"
+                // 移动端适配：窄屏时选集侧边栏变为底部抽屉
+                + "@media(max-width:768px){\n"
+                + ".ep-sidebar{position:fixed;bottom:0;left:0;right:0;width:100%;max-height:50vh;border-left:none;border-top:1px solid var(--line);border-radius:12px 12px 0 0;z-index:30;transform:translateY(100%);transition:transform .3s ease;}\n"
+                + ".ep-sidebar.mobile-show{transform:translateY(0);}\n"
+                + ".mobile-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);z-index:29;display:none;}\n"
+                + ".mobile-overlay.visible{display:block;}\n"
+                + "}\n"
+                + "</style></head><body>\n"
+                // 顶部标题栏
+                + "<div class='header'>\n"
+                + "<h1 id='videoTitle'>" + escapeHtml(title) + "</h1>\n"
+                + (hasEpisodes ? "<button class='toggle-ep' id='toggleEpBtn' onclick='toggleEp()'>选集</button>" : "")
+                + "</div>\n"
+                // 主体
+                + "<div class='main'>\n"
+                + "<div class='video-area' id='videoArea'>\n"
+                + "<video id='videoPlayer' controls autoplay playsinline></video>\n"
+                + "<div class='loading-overlay show' id='loadingOverlay'><div class='spinner'></div></div>\n"
+                + "<div id='errorMsg' class='error-msg'></div>\n"
+                + "</div>\n"
+                // 右侧选集侧边栏
+                + (hasEpisodes ? "<div class='ep-sidebar visible' id='epSidebar'>\n"
+                    + "<div class='ep-header'><span>选集</span><span class='ep-count' id='epCount'></span></div>\n"
+                    + "<div class='ep-list' id='epList'>" + episodeItems + "</div>\n"
+                    + "</div>\n"
+                    + "<div class='mobile-overlay' id='mobileOverlay' onclick='closeMobileEp()'></div>" : "")
+                + "</div>\n"
+                + (isHls ? "<script src='https://cdn.jsdelivr.net/npm/hls.js@latest'></script>\n" : "")
+                + "<script>\n"
+                // 选集侧边栏控制
+                + "var epVisible=true;\n"
+                + "function toggleEp(){\n"
+                + "var sb=document.getElementById('epSidebar');\n"
+                + "var isMobile=window.innerWidth<=768;\n"
+                + "if(isMobile){\n"
+                + "sb.classList.toggle('mobile-show');\n"
+                + "document.getElementById('mobileOverlay').classList.toggle('visible');\n"
+                + "}else{\n"
+                + "epVisible=!epVisible;\n"
+                + "if(epVisible){sb.classList.remove('hidden');sb.classList.add('visible');}else{sb.classList.remove('visible');sb.classList.add('hidden');}\n"
+                + "}\n"
+                + "}\n"
+                + "function closeMobileEp(){\n"
+                + "document.getElementById('epSidebar').classList.remove('mobile-show');\n"
+                + "document.getElementById('mobileOverlay').classList.remove('visible');\n"
+                + "}\n"
+                // 选集计数
+                + "var epItems=document.querySelectorAll('.ep-item');\n"
+                + "var epCountEl=document.getElementById('epCount');\n"
+                + "if(epCountEl&&epItems.length>0)epCountEl.textContent='('+epItems.length+')';\n"
+                // 视频播放器
+                + "var video=document.getElementById('videoPlayer');\n"
+                + "var loadingOverlay=document.getElementById('loadingOverlay');\n"
+                + "var errorMsg=document.getElementById('errorMsg');\n"
+                + "var currentSrc='" + escapeJs(proxiedVideoUrl) + "';\n"
+                + "var isHls=" + isHls + ";\n"
+                + "var hlsPlayer=null;\n"
+                + "console.log('[Player] video src: '+currentSrc+', isHls: '+isHls);\n"
+                + "function showLoading(show){if(loadingOverlay){if(show)loadingOverlay.classList.add('show');else loadingOverlay.classList.remove('show');}}\n"
+                + "function showError(msg){showLoading(false);errorMsg.style.display='block';errorMsg.innerHTML=msg+'<br><button class=\"retry-btn\" onclick=\"location.reload()\">重试</button>';}\n"
+                // 加载视频
+                + "function loadVideo(src,hls){\n"
+                + "showLoading(true);errorMsg.style.display='none';\n"
+                + "if(hlsPlayer){hlsPlayer.destroy();hlsPlayer=null;}\n"
+                + "currentSrc=src;isHls=hls;\n"
+                + "console.log('[Player] loading: '+src);\n"
+                + "if(hls&&typeof Hls!=='undefined'&&Hls.isSupported()){\n"
+                + "hlsPlayer=new Hls({maxBufferLength:30,maxMaxBufferLength:60});\n"
+                + "hlsPlayer.loadSource(src);hlsPlayer.attachMedia(video);\n"
+                + "hlsPlayer.on(Hls.Events.MANIFEST_PARSED,function(){showLoading(false);video.play().catch(function(){});});\n"
+                + "hlsPlayer.on(Hls.Events.ERROR,function(event,data){\n"
+                + "console.error('[Player] HLS error:',data);\n"
+                + "if(data.fatal){\n"
+                + "switch(data.type){\n"
+                + "case Hls.ErrorTypes.NETWORK_ERROR:showError('网络错误，正在重试...');hlsPlayer.startLoad();break;\n"
+                + "case Hls.ErrorTypes.MEDIA_ERROR:showError('媒体错误');hlsPlayer.recoverMediaError();break;\n"
+                + "default:showError('播放失败: '+data.details);break;\n"
+                + "}\n"
+                + "}\n"
+                + "});\n"
+                + "}else if(hls&&video.canPlayType('application/vnd.apple.mpegurl')){\n"
+                + "video.src=src;video.addEventListener('loadedmetadata',function(){showLoading(false);video.play().catch(function(){});});\n"
+                + "video.addEventListener('error',function(){showError('视频加载失败');});\n"
+                + "}else{\n"
+                + "video.src=src;\n"
+                + "video.addEventListener('loadeddata',function(){showLoading(false);});\n"
+                + "video.addEventListener('canplay',function(){showLoading(false);video.play().catch(function(){});});\n"
+                + "video.addEventListener('error',function(){showError('视频加载失败');});\n"
+                + "}\n"
+                + "}\n"
+                // 初始加载
+                + "loadVideo(currentSrc,isHls);\n"
+                // 选集切换（参考B站样式）
+                + "function switchEp(el){\n"
+                + "var url=el.getAttribute('data-url');\n"
+                + "if(!url)return;\n"
+                + "// 高亮当前选集\n"
+                + "document.querySelectorAll('.ep-item').forEach(function(item){item.classList.remove('active');});\n"
+                + "el.classList.add('active');\n"
+                + "closeMobileEp();\n"
+                + "// 通过代理获取新视频页面并提取视频源\n"
+                + "fetch('/api/browser/yinghua-video-src?url='+encodeURIComponent(url)).then(function(r){return r.json();}).then(function(data){\n"
+                + "if(data.success&&data.videoUrl){\n"
+                + "var newSrc=data.videoUrl;\n"
+                + "var newHls=newSrc.indexOf('.m3u8')>-1||newSrc.indexOf('m3u8-proxy')>-1;\n"
+                + "document.getElementById('videoTitle').textContent=data.title||'樱花动漫';\n"
+                + "document.title=data.title||'樱花动漫';\n"
+                + "loadVideo(newSrc,newHls);\n"
+                + "}else{showError(data.message||'获取视频源失败');}\n"
+                + "}).catch(function(err){showError('加载失败: '+err.message);});\n"
+                + "}\n"
+                // 高亮当前集数
+                + "(function(){\n"
+                + "var links=document.querySelectorAll('.ep-item');\n"
+                + "var currentOrigUrl='';\n"
+                + "try{var pu=new URL(window.location.href);currentOrigUrl=pu.searchParams.get('url')||'';if(currentOrigUrl)currentOrigUrl=decodeURIComponent(currentOrigUrl);}catch(e){}\n"
+                + "if(!currentOrigUrl)currentOrigUrl=window.location.href;\n"
+                + "for(var i=0;i<links.length;i++){\n"
+                + "var dataUrl=links[i].getAttribute('data-url')||'';\n"
+                + "if(dataUrl&&(currentOrigUrl===dataUrl||currentOrigUrl.indexOf(dataUrl)>-1||dataUrl.indexOf(currentOrigUrl)>-1)){\n"
+                + "links[i].classList.add('active');\n"
+                + "links[i].scrollIntoView({block:'center'});\n"
+                + "break;\n"
+                + "}\n"
+                + "}\n"
+                + "})();\n"
+                + "video.addEventListener('playing',function(){showLoading(false);});\n"
+                + "</script>\n"
+                + "</body></html>";
+    }
+
+    private String extractEpisodeList(String html, String currentPageUrl) {
+        // 提取选集列表：樱花动漫页面的 <div class="movurls"> 下的所有 <a href="/v/xxx-xx.html"> 链接
+        StringBuilder episodes = new StringBuilder();
+
+        // 尝试多种匹配模式
+        String[] movurlPatterns = {
+                // 模式1: class="movurls" 或 class="movurl"
+                "class=\"movurls?\"[^>]*>([\\s\\S]*?)</div>",
+                // 模式2: class="movurls" 后面可能有多层嵌套div
+                "class=\"movurls?\"[^>]*>([\\s\\S]*?)</ul>",
+                // 模式3: 播放列表区域
+                "播放列表[\\s\\S]*?<div[^>]*>([\\s\\S]*?)</ul>"
+        };
+
+        String movurlContent = null;
+        for (int i = 0; i < movurlPatterns.length; i++) {
+            java.util.regex.Matcher movurlMatcher = java.util.regex.Pattern.compile(
+                    movurlPatterns[i], java.util.regex.Pattern.CASE_INSENSITIVE | java.util.regex.Pattern.DOTALL
+            ).matcher(html);
+            if (movurlMatcher.find()) {
+                movurlContent = movurlMatcher.group(1);
+                log.info("[YinghuaPlayer] Episode list matched by pattern {}, contentLen={}", i + 1, movurlContent.length());
+                break;
+            }
+        }
+
+        if (movurlContent == null || movurlContent.isEmpty()) {
+            log.info("[YinghuaPlayer] No episode list found in page: {}", currentPageUrl);
+            return "";
+        }
+
+        // 提取所有选集链接
+        java.util.regex.Matcher linkMatcher = java.util.regex.Pattern.compile(
+                "<a[^>]+href=[\"']([^\"']+)[\"'][^>]*>([^<]+)</a>", java.util.regex.Pattern.CASE_INSENSITIVE
+        ).matcher(movurlContent);
+
+        int count = 0;
+        while (linkMatcher.find()) {
+            String href = linkMatcher.group(1);
+            String text = linkMatcher.group(2).trim();
+            if (href == null || !href.contains("/v/")) continue; // 只保留视频页面链接
+            try {
+                String fullUrl = new URL(new URL(currentPageUrl), href).toString();
+                // 构建选集链接：使用自定义播放器端点
+                String playUrl = "/api/browser/proxy?url=" + encodeURIComponent(fullUrl);
+                episodes.append("<a href='").append(escapeHtml(playUrl)).append("' data-url='").append(escapeHtml(fullUrl)).append("'>").append(escapeHtml(text)).append("</a>");
+                count++;
+            } catch (Exception e) {
+                // skip
+            }
+        }
+
+        log.info("[YinghuaPlayer] Extracted {} episodes from page: {}", count, currentPageUrl);
+        return episodes.toString();
+    }
+
+    private String injectYinghuaRequestInterceptor(String html, String currentUrl) {
+        // 为CDN域名的播放器页面注入轻量级请求拦截器
+        // 这些页面中的JS会动态加载m3u8/ts URL，需要拦截并走代理
+        String interceptorScript = "<script>(function(){"
+                + "console.log('[YinghuaCDN] injecting request interceptor...');"
+                // 获取当前页面的原始URL
+                + "var _cdnOrigUrl='';"
+                + "try{"
+                + "var _pu=window.location.href;"
+                + "var _u=new URL(_pu);"
+                + "_cdnOrigUrl=_u.searchParams.get('url')||'';"
+                + "if(_cdnOrigUrl){_cdnOrigUrl=decodeURIComponent(_cdnOrigUrl);}"
+                + "}catch(e){}"
+                + "if(!_cdnOrigUrl){_cdnOrigUrl=window.location.href;}"
+                // URL代理函数
+                + "var _cdnToProxy=function(u){"
+                + "if(!u||typeof u!=='string')return u;"
+                + "if(u.indexOf('/api/browser/')===0)return u;"
+                + "if(u.indexOf('blob:')===0||u.indexOf('data:')===0||u.indexOf('javascript:')===0)return u;"
+                + "try{"
+                + "var absUrl=new URL(u,_cdnOrigUrl).toString();"
+                + "return '/api/browser/proxy?url='+encodeURIComponent(absUrl);"
+                + "}catch(e){return u;}"
+                + "};"
+                // 拦截fetch
+                + "try{"
+                + "var _origFetch=window.fetch;"
+                + "window.fetch=function(input,init){"
+                + "var url=input;"
+                + "if(input instanceof Request){url=input.url;}"
+                + "if(typeof url==='string'&&url.length>0){"
+                + "var proxied=_cdnToProxy(url);"
+                + "if(proxied!==url){"
+                + "console.log('[YinghuaCDN] fetch: '+url);"
+                + "if(input instanceof Request){input=proxied;}else{input=proxied;}"
+                + "}"
+                + "}"
+                + "return _origFetch.call(window,input,init);"
+                + "};"
+                + "}catch(e){}"
+                // 拦截XMLHttpRequest
+                + "try{"
+                + "var _origOpen=XMLHttpRequest.prototype.open;"
+                + "XMLHttpRequest.prototype.open=function(method,url,async,user,pass){"
+                + "if(typeof url==='string'&&url.length>0){"
+                + "var proxied=_cdnToProxy(url);"
+                + "if(proxied!==url){console.log('[YinghuaCDN] XHR: '+url);url=proxied;}"
+                + "}"
+                + "return _origOpen.call(this,method,url,async!==false,user,pass);"
+                + "};"
+                + "}catch(e){}"
+                // 拦截video/source的src属性
+                + "try{"
+                + "var _origSrcDesc=Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype,'src')||{};"
+                + "if(_origSrcDesc.set){"
+                + "Object.defineProperty(HTMLMediaElement.prototype,'src',{"
+                + "set:function(v){var proxied=_cdnToProxy(v);if(proxied!==v){console.log('[YinghuaCDN] media.src: '+v);}return _origSrcDesc.set.call(this,proxied);},"
+                + "get:_origSrcDesc.get,configurable:true"
+                + "});"
+                + "}"
+                + "}catch(e){}"
+                // 拦截setAttribute
+                + "try{"
+                + "var _origSetAttr=Element.prototype.setAttribute;"
+                + "Element.prototype.setAttribute=function(name,value){"
+                + "if((name==='src'||name==='data-src')&&typeof value==='string'&&value.length>0){"
+                + "var tag=this.tagName&&this.tagName.toLowerCase();"
+                + "if(tag==='source'||tag==='video'||tag==='audio'||tag==='iframe'){"
+                + "var proxied=_cdnToProxy(value);"
+                + "if(proxied!==value){console.log('[YinghuaCDN] setAttr('+name+'): '+value);value=proxied;}"
+                + "}"
+                + "}"
+                + "return _origSetAttr.call(this,name,value);"
+                + "};"
+                + "}catch(e){}"
+                // 拦截iframe src（播放器可能嵌套iframe）
+                + "try{"
+                + "var _origIframeSrcDesc=Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype,'src')||{};"
+                + "if(_origIframeSrcDesc.set){"
+                + "Object.defineProperty(HTMLIFrameElement.prototype,'src',{"
+                + "set:function(v){var proxied=_cdnToProxy(v);if(proxied!==v){console.log('[YinghuaCDN] iframe.src: '+v);}return _origIframeSrcDesc.set.call(this,proxied);},"
+                + "get:_origIframeSrcDesc.get,configurable:true"
+                + "});"
+                + "}"
+                + "}catch(e){}"
+                + "console.log('[YinghuaCDN] interceptor injected, origUrl='+_cdnOrigUrl);"
+                + "})();</script>";
+        if (html.contains("</head>")) {
+            html = html.replace("</head>", interceptorScript + "</head>");
+        } else if (html.contains("</HEAD>")) {
+            html = html.replace("</HEAD>", interceptorScript + "</HEAD>");
+        } else {
+            html = interceptorScript + html;
+        }
+        return html;
+    }
+
+    private boolean isM3u8Content(String contentType, String url) {
+        if (contentType == null) return false;
+        String lower = contentType.toLowerCase();
+        if (lower.contains("mpegurl") || lower.contains("mp2t") || lower.contains("x-mpegurl")) {
+            return true;
+        }
+        // 有些 CDN 返回 application/octet-stream，但 URL 以 .m3u8 结尾
+        if (url != null && url.toLowerCase().contains(".m3u8")) {
+            return true;
+        }
+        return false;
+    }
+
+    private String rewriteM3u8Urls(String m3u8, String m3u8Url, String proxyBaseUrl) {
+        if (m3u8 == null || m3u8.isEmpty()) return m3u8;
+        String[] lines = m3u8.split("\n");
+        StringBuilder sb = new StringBuilder();
+        for (String line : lines) {
+            String trimmed = line.trim();
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+                // #EXT-X-KEY 等标签中可能包含 URI="..." 需要重写
+                if (trimmed.startsWith("#EXT-X-KEY") || trimmed.startsWith("#EXT-X-MEDIA")) {
+                    line = rewriteM3u8TagUri(line, m3u8Url, proxyBaseUrl);
+                }
+                sb.append(line).append("\n");
+            } else {
+                // 这是一个 URL（.ts 分片、.m3u8 子播放列表等）
+                String resolved;
+                try {
+                    resolved = new URL(new URL(m3u8Url), trimmed).toString();
+                } catch (Exception e) {
+                    resolved = trimmed;
+                }
+                String proxied = buildProxyUrl(resolved, proxyBaseUrl);
+                sb.append(proxied).append("\n");
+            }
+        }
+        return sb.toString();
+    }
+
+    private String rewriteM3u8TagUri(String tag, String m3u8Url, String proxyBaseUrl) {
+        // 重写 #EXT-X-KEY:METHOD=AES-128,URI="https://xxx/key",IV=0x... 中的 URI
+        java.util.regex.Matcher uriMatcher = java.util.regex.Pattern.compile("URI=\"([^\"]+)\"").matcher(tag);
+        if (uriMatcher.find()) {
+            String origUri = uriMatcher.group(1);
+            String resolved;
+            try {
+                resolved = new URL(new URL(m3u8Url), origUri).toString();
+            } catch (Exception e) {
+                resolved = origUri;
+            }
+            String proxied = buildProxyUrl(resolved, proxyBaseUrl);
+            tag = tag.replace("URI=\"" + origUri + "\"", "URI=\"" + proxied + "\"");
+        }
+        return tag;
     }
 
     private boolean shouldRewriteTextBody(String contentType, boolean isBilibili, boolean isBing, boolean isDoubao, boolean isQwen, boolean isYuanbao) {
@@ -4057,20 +4898,54 @@ public class BrowserProxyController {
                 + "}"
                 + "}catch(e){}"
                 + "try{"
+                // 拦截 form.submit()：代理action URL
                 + "var _formSubmit=HTMLFormElement.prototype.submit;"
                 + "HTMLFormElement.prototype.submit=function(){"
                 + "try{"
                 + "var f=this;"
-                + "var encType=f.getAttribute('enctype')||f.enctype||'';"
-                + "if(encType.indexOf('multipart')!==-1||f.querySelector('input[type=file]')){"
                 + "var u=f.getAttribute('action')||_base;"
                 + "if(u.indexOf('/api/browser/')!==-1){try{u=new URL(u,window.location.href).searchParams.get('url')||u;}catch(ex){}}"
                 + "var resolved=new URL(u,_base).href;"
                 + "f.setAttribute('action',proxyUrl(resolved));"
-                + "}"
                 + "}catch(e){}"
                 + "_formSubmit.call(this);"
                 + "};"
+                + "}catch(e){}"
+                + "try{"
+                // 拦截表单提交事件 - 使用bubble阶段，确保onsubmit已执行（action已被设置）
+                + "var _submitNavigating=false;"
+                + "document.addEventListener('submit',function(e){"
+                + "try{"
+                + "if(e.defaultPrevented)return;"
+                + "if(_submitNavigating)return;"
+                + "var f=e.target;"
+                + "if(f&&f.tagName==='FORM'){"
+                + "e.preventDefault();"
+                + "e.stopImmediatePropagation();"
+                + "_submitNavigating=true;"
+                + "var method=(f.method||'GET').toUpperCase();"
+                // 读取action：用f.action读取DOM属性（onsubmit通过f.action=xxx设置的值）
+                // f.getAttribute('action')只能读取HTML属性，读不到onsubmit设置的DOM属性
+                + "var actionStr='';"
+                + "try{actionStr=f.action||'';}catch(ex){}"
+                + "var u;"
+                + "if(actionStr.indexOf('/api/browser/')!==-1){"
+                + "try{u=new URL(actionStr,_lo+'/').searchParams.get('url')||actionStr;}catch(ex){u=actionStr;}"
+                + "}else if(actionStr&&actionStr.indexOf('javascript:')!==0){"
+                + "try{u=new URL(actionStr,_base).href;}catch(ex){u=actionStr;}"
+                + "}else{u=_base;}"
+                + "if(method==='GET'){"
+                // 对于GET表单，直接导航到action URL
+                // onsubmit已经把搜索词编码到URL路径中（如/search/xxx/），不需要再追加表单参数
+                + "navigateTo(u);"
+                + "}else{"
+                + "f.setAttribute('action',proxyUrl(u));"
+                + "_formSubmit.call(f);"
+                + "}"
+                + "setTimeout(function(){_submitNavigating=false;},500);"
+                + "}"
+                + "}catch(ex){console.error('[Proxy] submit error:',ex);_submitNavigating=false;}"
+                + "},false);"
                 + "}catch(e){}"
                 + "try{"
                 + "var _origImg=window.Image;"
@@ -4130,7 +5005,7 @@ public class BrowserProxyController {
                 + "var ds=n.getAttribute('data-src');"
                 + "if(ds&&ds.indexOf('http')===0&&ds.indexOf('/api/browser/')===-1){n.setAttribute('data-src',proxyUrl(ds));}"
                 + "}"
-                + "if((tag==='IMG'||tag==='VIDEO'||tag==='AUDIO'||tag==='SOURCE')&&n.src){"
+                + "if((tag==='IMG'||tag==='VIDEO'||tag==='AUDIO'||tag==='SOURCE'||tag==='IFRAME')&&n.src){"
                 + "var s=String(n.src);"
                 + "if(s.indexOf('about:')===0||s.indexOf('javascript:')===0||s.indexOf('data:')===0||s.indexOf('blob:')===0||s.indexOf('/api/browser/')!==-1)return;"
                 + "try{var absUrl=new URL(s,_base).href;n.src=proxyUrl(absUrl);}catch(e){}"
@@ -4178,7 +5053,7 @@ public class BrowserProxyController {
                 + "}"
                 + "if((nl==='src'||nl==='href')&&typeof v==='string'&&v.length>0){"
                 + "var t=this.tagName&&this.tagName.toUpperCase();"
-                + "if(t==='SCRIPT'||t==='LINK'||t==='IMG'||t==='VIDEO'||t==='AUDIO'||t==='SOURCE'){"
+                + "if(t==='SCRIPT'||t==='LINK'||t==='IMG'||t==='VIDEO'||t==='AUDIO'||t==='SOURCE'||t==='IFRAME'){"
                 + "v=proxyUrl(v);"
                 + "}"
                 + "}"
@@ -4230,6 +5105,17 @@ public class BrowserProxyController {
                 + "}"
                 + "}catch(e){}"
                 + "try{"
+                + "var _iframeSrcDesc=Object.getOwnPropertyDescriptor(HTMLIFrameElement.prototype,'src');"
+                + "if(_iframeSrcDesc&&_iframeSrcDesc.set){"
+                + "var _origIframeSrcSet=_iframeSrcDesc.set;"
+                + "Object.defineProperty(HTMLIFrameElement.prototype,'src',{"
+                + "set:function(v){if(typeof v==='string'&&v.length>0){v=proxyUrl(v);}_origIframeSrcSet.call(this,v);},"
+                + "get:_iframeSrcDesc.get,"
+                + "configurable:true"
+                + "});"
+                + "}"
+                + "}catch(e){}"
+                + "try{"
                 + "var _linkHrefDesc=Object.getOwnPropertyDescriptor(HTMLLinkElement.prototype,'href');"
                 + "if(_linkHrefDesc&&_linkHrefDesc.set){"
                 + "var _origLinkHrefSet=_linkHrefDesc.set;"
@@ -4274,7 +5160,7 @@ public class BrowserProxyController {
                 + "if(m.type==='childList'&&m.addedNodes){"
                 + "for(var j=0;j<m.addedNodes.length;j++){"
                 + "var n=m.addedNodes[j];"
-                + "if(n.nodeType===1){proxyNodeAttrs(n);var sub=n.querySelectorAll&&n.querySelectorAll('img,video,audio,source,script,link');if(sub){for(var k=0;k<sub.length;k++){proxyNodeAttrs(sub[k]);}}}"
+                + "if(n.nodeType===1){proxyNodeAttrs(n);var sub=n.querySelectorAll&&n.querySelectorAll('img,video,audio,source,iframe,script,link');if(sub){for(var k=0;k<sub.length;k++){proxyNodeAttrs(sub[k]);}}}"
                 + "}"
                 + "}"
                 + "}"
@@ -4298,6 +5184,36 @@ public class BrowserProxyController {
                 + "setTimeout(function(){"
                 + "if(_proxyErrors.length>0)console.warn('[Proxy] JS errors: '+_proxyErrors.join(' | '));"
                 + "},5000);"
+                // 拦截所有表单的onsubmit，替换为代理导航
+                + "try{"
+                + "document.querySelectorAll('form').forEach(function(form){"
+                + "var origOnsubmit=form.onsubmit;"
+                + "form.onsubmit=null;"
+                + "form.addEventListener('submit',function(e){"
+                + "e.preventDefault();e.stopImmediatePropagation();"
+                + "try{"
+                // 先执行原始onsubmit逻辑（如验证输入、设置action等）
+                + "if(origOnsubmit){"
+                + "var result=origOnsubmit.call(form,e);"
+                + "if(result===false)return;"
+                + "}"
+                // 读取action属性值（onsubmit可能已设置）
+                + "var actionVal=form.getAttribute('action')||'';"
+                + "if(!actionVal){"
+                // getAttribute读不到时，尝试从onsubmit代码中提取action
+                + "var onsubmitCode=form.getAttribute('onsubmit')||'';"
+                + "var actionMatch=onsubmitCode.match(/action\\s*=\\s*['\"]([^'\"]+)['\"]/);"
+                + "if(actionMatch)actionVal=actionMatch[1];"
+                + "}"
+                + "if(!actionVal)actionVal=_base;"
+                + "var resolved;"
+                + "try{resolved=new URL(actionVal,_base).href;}catch(ex){resolved=actionVal;}"
+                + "console.log('[Proxy] Form submit, action='+resolved);"
+                + "navigateTo(resolved);"
+                + "}catch(ex){console.error('[Proxy] Form submit error:',ex);}"
+                + "},false);"
+                + "});"
+                + "}catch(ex){console.error('[Proxy] Form intercept error:',ex);}"
                 + "},false);"
                 + "})();</script>";
 
